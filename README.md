@@ -19,10 +19,28 @@ in [RivalsSkinChangerSITEBASED](https://github.com/Martinikaws/RivalsSkinChanger
 
 ## Getting started
 
-1. Put `main.lua` in `C:\matcha\workspace` as `RivalsSkinSwapper.lua`, or in
-   `C:\matcha\autoexec` to have it run on every join.
+1. Put `main.lua` in `C:\matcha\workspace` as `RivalsSkinSwapper.lua`.
 2. Run `gui.lua` from Matcha while you are in Rivals.
 3. Open the **Rivals Changer** tab, choose what you want, then **Save & Apply**.
+
+## Applying on every join
+
+Put a file in `C:\matcha\autoexec` that runs the menu:
+
+```lua
+loadstring(readfile("RivalsSkinGui.lua"))()
+```
+
+(`gui.lua` saved in your workspace as `RivalsSkinGui.lua`.)
+
+With **Auto-apply on join** switched on in the menu, that is all you need: the
+menu waits for Rivals to load, applies your saved config by itself, once per
+server, and the tab is there if you want to change something. The setting is
+remembered in `rivals_gui.settings`, and defaults to on when the menu finds
+itself in the autoexec folder.
+
+Only `gui.lua` belongs in autoexec. Keeping the changer there as well just runs
+it twice; the second run is refused by its own lock.
 
 ## What the menu covers
 

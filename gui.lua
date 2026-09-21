@@ -4,6 +4,7 @@
 -- and reads the item lists from the running game instead of a bundled copy.
 
 local FILE = "rivals_config.lua"
+local SETTINGS = "rivals_gui.settings"
 local BACKUP = "rivals_config.backup.lua"
 local SCRIPT_FILES = {"RivalsSkinSwapper.lua", "workspace/RivalsSkinSwapper.lua", "scripts/RivalsSkinSwapper.lua"}
 local SCRIPT_URL = "https://raw.githubusercontent.com/Martinikaws/RivalsSkinChangerFULLMATCHA/refs/heads/main/main.lua"
@@ -173,6 +174,56 @@ local function saveConfig()
     writefile(FILE, content)
     assert(readfile(FILE) == content, "Could not verify the save. Your previous config is in " .. BACKUP)
     state.baseline = content
+end
+
+
+-- Auto-apply on join
+--
+-- From autoexec this script only builds the menu, so the changer would sit
+-- there until Apply is pressed. With auto-apply on, it applies the saved
+-- config by itself once the game is ready, once per server. The setting lives
+-- in the workspace next to the config; the autoexec folder is only used to
+-- guess the default, and Matcha may refuse to read outside its workspace.
+local AUTOEXEC_DIRS = {"../autoexec", "C:/matcha/autoexec", "autoexec"}
+local GUI_MARKERS = {"RivalsSkinGui", "RivalsSkinChangerFULLMATCHA", "gui.lua"}
+
+local function autoexecLoadsGui()
+    for _, dir in ipairs(AUTOEXEC_DIRS) do
+        local okList, files = pcall(listfiles, dir)
+        if okList and type(files) == "table" then
+            for _, path in ipairs(files) do
+                local okRead, body = pcall(readfile, path)
+                if okRead and type(body) == "string" then
+                    for _, marker in ipairs(GUI_MARKERS) do
+                        if body:find(marker, 1, true) then return true, path end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function loadSettings()
+    local auto
+    local okRead, body = pcall(readfile, SETTINGS)
+    if okRead and type(body) == "string" then
+        local value = body:match("autoapply%s*=%s*(%w+)")
+        if value then auto = (value == "1" or value == "true" or value == "on") end
+    end
+    if auto == nil then
+        -- First run: default to on when autoexec starts this GUI.
+        local okScan, found, where = pcall(autoexecLoadsGui)
+        auto = okScan and found or false
+        state.autoexecPath = okScan and where or nil
+        state.autoexecScan = okScan and (found and "found in autoexec" or "not in autoexec")
+            or "autoexec folder not readable"
+    end
+    state.autoApply = auto
+end
+
+local function saveSettings()
+    pcall(writefile, SETTINGS, "autoapply=" .. (state.autoApply and "1" or "0") .. "\n")
 end
 
 -- Item lists, read from the running game
@@ -509,7 +560,41 @@ local function mappingSection(sec, section, list)
     for _, key in ipairs(keys) do sec:Text("  " .. key .. " -> " .. state.values[section][key]) end
 end
 
+
+-- Waits for Rivals to finish loading (the changer needs its assets), then
+-- applies once. A teleport or a second GUI run cancels it.
+local function autoApplyOnJoin()
+    if not state.autoApply then return end
+    task.spawn(function()
+        local deadline = tick() + 180
+        while tick() < deadline do
+            if _G.__RivalsGuiSession ~= guiToken then return end
+            local context = currentContext()
+            local jobId = context and context.key
+            if jobId and _G.__RivalsGuiAutoApplied == jobId then return end
+            if jobId and not shared.busy and not upstreamBusy() then
+                if not (isfile(FILE) and readfile(FILE):find("%S")) then
+                    state.status = "Auto-apply: nothing configured yet."
+                    return
+                end
+                _G.__RivalsGuiAutoApplied = jobId
+                -- Started from autoexec the lists were read before Rivals
+                -- loaded, so they are empty; read them again now.
+                if #catalog.weapons == 0 then
+                    pcall(loadCatalog)
+                    refreshTab()
+                end
+                job("Auto-applying...", apply)
+                return
+            end
+            task.wait(1)
+        end
+        state.status = "Auto-apply gave up: Rivals did not finish loading."
+    end)
+end
+
 pcall(loadConfig)
+pcall(loadSettings)
 pcall(loadCatalog)
 pcall(function() UI.RemoveTab(TAB) end)
 
@@ -519,6 +604,16 @@ drawTab = function(tab)
     controls:Button("Reload lists", function() job("Reading lists...", function() loadCatalog() refreshTab() end) end)
     controls:Text(shared.busy and "Working..." or state.status)
     controls:Text(state.catalogStatus)
+    local autoOptions = {"Off", "On"}
+    local aid = "rv_auto_" .. session .. "_" .. state.revision
+    UI.SetValue(aid, state.autoApply and 1 or 0)
+    controls:Combo(aid, "Auto-apply on join", autoOptions, state.autoApply and 1 or 0, function(idx)
+        state.autoApply = (tonumber(idx) or 0) == 1
+        saveSettings()
+        state.status = state.autoApply and "Auto-apply on: it will apply itself next join."
+            or "Auto-apply off."
+    end)
+    if state.autoexecScan then controls:Text("Autoexec: " .. state.autoexecScan) end
 
     local sky = tab:Section("Skybox and lighting", "Left")
     local skyNow = (state.values.skybox or {}).Preset
@@ -625,4 +720,6 @@ drawTab = function(tab)
 end
 
 UI.AddTab(TAB, drawTab)
-print("[Rivals GUI] Ready - open the '" .. TAB .. "' tab.")
+print("[Rivals GUI] Ready - open the '" .. TAB .. "' tab."
+    .. (state.autoApply and " Auto-apply is on." or ""))
+autoApplyOnJoin()
