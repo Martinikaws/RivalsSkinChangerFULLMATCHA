@@ -538,7 +538,7 @@ drawTab = function(tab)
 
     local credits = tab:Section("Credits", "Left")
     credits:Text("Skin changer by Martini")
-    credits:Text("Contributor: dantekarate")
+    credits:Text("Contributor: dantekarati")
     credits:Text("Main Testers/Supporters: choperr0333 aka @Giounis")
 
     local pages = {"Skins", "Swaps", "Wraps", "Finishers", "Charms"}
