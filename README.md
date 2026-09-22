@@ -13,6 +13,7 @@ Only you see the changes. Nothing is sent to the server.
 | --- | --- |
 | `gui.lua` | The menu. Edits `rivals_config.lua` and runs the changer. |
 | `main.lua` | The changer itself. Works on its own, with or without the GUI. |
+| `autoexec.lua` | Put this in `C:\matcha\autoexec` to load the menu on every join. |
 
 The site-driven version, where the config is built on a web page instead, lives
 in [RivalsSkinChangerSITEBASED](https://github.com/Martinikaws/RivalsSkinChangerSITEBASED).
@@ -25,13 +26,10 @@ in [RivalsSkinChangerSITEBASED](https://github.com/Martinikaws/RivalsSkinChanger
 
 ## Applying on every join
 
-Put a file in `C:\matcha\autoexec` that runs the menu:
-
-```lua
-loadstring(readfile("RivalsSkinGui.lua"))()
-```
-
-(`gui.lua` saved in your workspace as `RivalsSkinGui.lua`.)
+Save `gui.lua` in your workspace as `RivalsSkinGui.lua`, then put `autoexec.lua`
+in `C:\matcha\autoexec`. It waits for Matcha's UI binding (autoexec starts before
+that exists), loads the menu from your workspace, and falls back to the copy in
+this repo if the file is missing.
 
 With **Auto-apply on join** switched on in the menu, that is all you need: the
 menu waits for Rivals to load, applies your saved config by itself, once per
@@ -39,8 +37,8 @@ server, and the tab is there if you want to change something. The setting is
 remembered in `rivals_gui.settings`, and defaults to on when the menu finds
 itself in the autoexec folder.
 
-Only `gui.lua` belongs in autoexec. Keeping the changer there as well just runs
-it twice; the second run is refused by its own lock.
+Keep the changer itself out of that folder. Two launchers in autoexec means it
+starts twice; the second start is refused by its own lock.
 
 ## What the menu covers
 
