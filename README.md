@@ -34,7 +34,7 @@ this repo if the file is missing.
 With **Auto-apply on join** switched on in the menu, that is all you need: the
 menu waits for Rivals to load, applies your saved config by itself, once per
 server, and the tab is there if you want to change something. The setting is
-remembered in `rivals_gui.settings`, and defaults to on when the menu finds
+remembered in `rivals_gui_settings.txt`, and defaults to on when the menu finds
 itself in the autoexec folder.
 
 Keep the changer itself out of that folder. Two launchers in autoexec means it

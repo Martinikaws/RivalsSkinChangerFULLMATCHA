@@ -4,7 +4,7 @@
 -- and reads the item lists from the running game instead of a bundled copy.
 
 local FILE = "rivals_config.lua"
-local SETTINGS = "rivals_gui.settings"
+local SETTINGS = "rivals_gui_settings.txt"
 local BACKUP = "rivals_config.backup.lua"
 local SCRIPT_FILES = {"RivalsSkinSwapper.lua", "workspace/RivalsSkinSwapper.lua", "scripts/RivalsSkinSwapper.lua"}
 local SCRIPT_URL = "https://raw.githubusercontent.com/Martinikaws/RivalsSkinChangerFULLMATCHA/refs/heads/main/main.lua"
@@ -208,6 +208,7 @@ local function loadSettings()
     local auto
     local okRead, body = pcall(readfile, SETTINGS)
     if okRead and type(body) == "string" then
+        state.settingsRead = true
         local value = body:match("autoapply%s*=%s*(%w+)")
         if value then auto = (value == "1" or value == "true" or value == "on") end
     end
@@ -491,8 +492,8 @@ local function picker(sec, section, key, names, firstLabel, label, onPick)
         if onPick then onPick(idx ~= 0 and value or nil) else setMapping(section, key, idx ~= 0 and value or nil) end
     end)
 end
-local function searchBox(sec, section)
-    sec:InputText("rv_find_" .. session .. "_" .. section, "Search", state.searchText[section] or "", function(value)
+local function searchBox(sec, section, label)
+    sec:InputText("rv_find_" .. session .. "_" .. section, label or "Search", state.searchText[section] or "", function(value)
         if type(value) ~= "string" then return end
         local normalized = trim(value):lower()
         local changed = (state.search[section] or "") ~= normalized
@@ -507,9 +508,20 @@ local function matching(section, names)
     end
     return out
 end
+-- The "Looks like" half has its own search; the current pick always stays listed.
+local function matchingTargets(section, names, selected)
+    local out = matching(section .. "_target", names)
+    if selected and #out < #names then
+        local listed = false
+        for _, name in ipairs(out) do if name == selected then listed = true break end end
+        if not listed then out[#out + 1] = selected end
+    end
+    return out
+end
 -- "Item you own" then "looks like", written as Owned=Target.
 local function mappingSection(sec, section, list)
-    searchBox(sec, section)
+    searchBox(sec, section, "Search you own")
+    searchBox(sec, section .. "_target", "Search looks like")
     local names = matching(section, list)
     if #names == 0 then sec:Text("No matches - clear the search."); return end
     local index = selectedIndex(names, state.owned[section])
@@ -525,8 +537,11 @@ local function mappingSection(sec, section, list)
     local owned = state.owned[section]
     if not owned then return end
     -- Season charms carry every rank; one has to be picked or the game shows all.
+    local targets = matchingTargets(section, list, (state.values[section] or {})[owned])
     if section == "charms" then
-        picker(sec, section, owned, list, "Unchanged", "Looks like", function(value)
+        local current = (state.values.charms or {})[owned]
+        targets = matchingTargets(section, list, current and (current:match("^(Season %d+)%s") or current))
+        picker(sec, section, owned, targets, "Unchanged", "Looks like", function(value)
             if value and value:match("^Season %d+$") then
                 local rank = state.rank[owned] or RANKS[1]
                 setMapping(section, owned, value .. " " .. rank)
@@ -550,7 +565,7 @@ local function mappingSection(sec, section, list)
             end)
         end
     else
-        picker(sec, section, owned, list, "Unchanged", "Looks like")
+        picker(sec, section, owned, targets, "Unchanged", "Looks like")
     end
     sec:Spacing()
     local keys = {}
@@ -561,35 +576,43 @@ local function mappingSection(sec, section, list)
 end
 
 
--- Waits for Rivals to finish loading (the changer needs its assets), then
--- applies once. A teleport or a second GUI run cancels it.
+-- Watches for Rivals to finish loading (the changer needs its assets), then
+-- applies once per server. Autoexec can start the menu long before the join
+-- and the menu outlives teleports, so it keeps watching instead of timing
+-- out. A second GUI run takes over.
 local function autoApplyOnJoin()
-    if not state.autoApply then return end
     task.spawn(function()
-        local deadline = tick() + 180
-        while tick() < deadline do
-            if _G.__RivalsGuiSession ~= guiToken then return end
-            local context = currentContext()
-            local jobId = context and context.key
-            if jobId and _G.__RivalsGuiAutoApplied == jobId then return end
-            if jobId and not shared.busy and not upstreamBusy() then
+        while _G.__RivalsGuiSession == guiToken do
+            -- Autoexec can start the menu before the workspace is readable;
+            -- read the saved switch again once it is.
+            local okFile, hasFile = pcall(isfile, SETTINGS)
+            if not state.settingsRead and okFile and hasFile then
+                local before = state.autoApply
+                pcall(loadSettings)
+                if state.autoApply ~= before then refreshTab() end
+            end
+            local context = state.autoApply and currentContext()
+            local key = context and context.key
+            local applied = _G.__RIVALS_SKIN_CHANGER_STATE
+            if key and _G.__RivalsGuiAutoApplied ~= key and applied and applied.wfAddr == context.wf then
+                -- Already applied here, by hand or by an earlier menu.
+                _G.__RivalsGuiAutoApplied = key
+            elseif key and _G.__RivalsGuiAutoApplied ~= key and not shared.busy and not upstreamBusy() then
+                _G.__RivalsGuiAutoApplied = key
                 if not (isfile(FILE) and readfile(FILE):find("%S")) then
                     state.status = "Auto-apply: nothing configured yet."
-                    return
+                else
+                    -- Started from autoexec the lists were read before Rivals
+                    -- loaded, so they are empty; read them again now.
+                    if #catalog.weapons == 0 then
+                        pcall(loadCatalog)
+                        refreshTab()
+                    end
+                    job("Auto-applying...", apply)
                 end
-                _G.__RivalsGuiAutoApplied = jobId
-                -- Started from autoexec the lists were read before Rivals
-                -- loaded, so they are empty; read them again now.
-                if #catalog.weapons == 0 then
-                    pcall(loadCatalog)
-                    refreshTab()
-                end
-                job("Auto-applying...", apply)
-                return
             end
-            task.wait(1)
+            task.wait(2)
         end
-        state.status = "Auto-apply gave up: Rivals did not finish loading."
     end)
 end
 
@@ -642,9 +665,22 @@ drawTab = function(tab)
     if page == "Skins" then
         searchBox(items, "skins")
         local query, shown = state.search.skins or "", 0
+        -- Matches the weapon name or any of its skins; a skin match lists only those skins.
         for _, weapon in ipairs(catalog.weapons) do
-            if query == "" or weapon.name:lower():find(query, 1, true) then
-                picker(items, "skins", weapon.name, weapon.skins or {}, "Default")
+            local skins = weapon.skins or {}
+            if query ~= "" and not weapon.name:lower():find(query, 1, true) then
+                local hits, selected = matching("skins", skins), (state.values.skins or {})[weapon.name]
+                if #hits == 0 then
+                    skins = nil
+                else
+                    local listed = not selected
+                    for _, s in ipairs(hits) do if s == selected then listed = true break end end
+                    if not listed then hits[#hits + 1] = selected end
+                    skins = hits
+                end
+            end
+            if skins then
+                picker(items, "skins", weapon.name, skins, "Default")
                 shown = shown + 1
             end
         end
@@ -690,8 +726,9 @@ drawTab = function(tab)
                 end)
                 local owned = state.owned.swapSkin
                 local current = ((state.swaps or {})[weapon] or {})[owned]
+                searchBox(items, "swaps_target", "Search looks like")
                 local targets = {"Unchanged"}
-                for _, skin in ipairs(skins) do
+                for _, skin in ipairs(matchingTargets("swaps", skins, current)) do
                     if skin ~= owned then targets[#targets + 1] = skin end
                 end
                 local tid = "rv_swapt_" .. session .. "_" .. state.revision .. "_" .. weapon .. "_" .. tostring(owned)
