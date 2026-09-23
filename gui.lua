@@ -690,12 +690,14 @@ drawTab = function(tab)
             if value and value ~= "Pick one" then setSky(value) end
         end)
     end
-    local darkNow = (state.values.lighting or {}).Preset == "dark"
+    -- "Match sky" uses the lighting made for the chosen sky (the uploaded ones).
+    local lightOptions, lightValues = {"Normal", "Dark", "Match sky"}, {nil, "dark", "match"}
+    local lightNow = ((state.values.lighting or {}).Preset or ""):lower()
+    local lightIndex = lightNow == "dark" and 1 or (lightNow == "match" and 2 or 0)
     local lid = "rv_light_" .. session .. "_" .. state.revision
-    local lightOptions = {"Normal", "Dark"}
-    UI.SetValue(lid, darkNow and 1 or 0)
-    sky:Combo(lid, "Lighting", lightOptions, darkNow and 1 or 0, function(idx)
-        setMapping("lighting", "Preset", (tonumber(idx) or 0) == 1 and "dark" or nil)
+    UI.SetValue(lid, lightIndex)
+    sky:Combo(lid, "Lighting", lightOptions, lightIndex, function(idx)
+        setMapping("lighting", "Preset", lightValues[(tonumber(idx) or 0) + 1])
     end)
 
     local credits = tab:Section("Credits", "Left")
