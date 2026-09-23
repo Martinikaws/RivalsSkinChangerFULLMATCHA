@@ -20,7 +20,22 @@ _G.RivalsGuiState = _G.RivalsGuiState or {busy = false}
 local shared = _G.RivalsGuiState
 assert(not shared.busy, "Wait for the current operation to finish, then rerun this GUI.")
 
-local SKYBOXES = {"Off", "blue", "space", "graveyard", "sudden death", "station", "westown", "black", "classic"}
+-- Matcha's dropdowns can't scroll, so the skies are split into short groups:
+-- pick a group, then the sky in it.
+local function numbered(prefix, from, to)
+    local out = {}
+    for n = from, to do out[#out + 1] = string.format("%s %02d", prefix, n) end
+    return out
+end
+local SKY_GROUPS = {
+    {name = "Off", skies = {}},
+    {name = "Game skies", skies = {"blue", "space", "graveyard", "sudden death", "station", "westown", "black", "gray", "classic"}},
+    {name = "Cloudy 1-12", skies = numbered("cloudy", 1, 12)},
+    {name = "Cloudy 13-25", skies = numbered("cloudy", 13, 25)},
+    {name = "Space", skies = {"galaxy", "blue nebula", "gold nebula"}},
+}
+local SKY_GROUP_NAMES = {}
+for _, g in ipairs(SKY_GROUPS) do SKY_GROUP_NAMES[#SKY_GROUP_NAMES + 1] = g.name end
 local RANKS = {"Archnemesis", "Nemesis", "Onyx 3", "Onyx 2", "Onyx 1", "Diamond 3", "Diamond 2", "Diamond 1",
     "Platinum 3", "Platinum 2", "Platinum 1", "Gold 3", "Gold 2", "Gold 1", "Silver 3", "Silver 2", "Silver 1",
     "Bronze 3", "Bronze 2", "Bronze 1", "Unranked"}
@@ -639,13 +654,42 @@ drawTab = function(tab)
     if state.autoexecScan then controls:Text("Autoexec: " .. state.autoexecScan) end
 
     local sky = tab:Section("Skybox and lighting", "Left")
-    local skyNow = (state.values.skybox or {}).Preset
-    local sid = "rv_sky_" .. session .. "_" .. state.revision
-    UI.SetValue(sid, selectedIndex(SKYBOXES, skyNow))
-    sky:Combo(sid, "Skybox", SKYBOXES, selectedIndex(SKYBOXES, skyNow), function(idx)
-        local value = SKYBOXES[(tonumber(idx) or 0) + 1]
-        setMapping("skybox", "Preset", value ~= "Off" and value or nil)
+    local skyNow = ((state.values.skybox or {}).Preset or ""):lower()
+    local function setSky(value)
+        -- Per-face ids from the site would win over the preset; drop them.
+        for _, k in ipairs({"All", "BK", "DN", "FT", "LF", "RT", "UP"}) do setMapping("skybox", k, nil) end
+        setMapping("skybox", "Preset", value)
+    end
+    -- The group shown is the one holding the current sky, unless another was just picked.
+    local groupIndex = 0
+    for gi, g in ipairs(SKY_GROUPS) do
+        for _, name in ipairs(g.skies) do if name == skyNow then groupIndex = gi - 1 end end
+    end
+    if state.skyGroup then groupIndex = state.skyGroup end
+    local group = SKY_GROUPS[groupIndex + 1]
+    local gid = "rv_skyg_" .. session .. "_" .. state.revision
+    UI.SetValue(gid, groupIndex)
+    sky:Combo(gid, "Skybox", SKY_GROUP_NAMES, groupIndex, function(idx)
+        if shared.busy then return end
+        state.skyGroup = tonumber(idx) or 0
+        if state.skyGroup == 0 then setSky(nil) end
+        refreshTab()
     end)
+    if #group.skies > 0 then
+        local sid = "rv_sky_" .. session .. "_" .. state.revision .. "_" .. groupIndex
+        local current = selectedIndex(group.skies, skyNow)
+        local listed = false
+        for _, name in ipairs(group.skies) do if name == skyNow then listed = true end end
+        local options = {}
+        if not listed then options[1] = "Pick one" end
+        for _, name in ipairs(group.skies) do options[#options + 1] = name end
+        current = listed and current or 0
+        UI.SetValue(sid, current)
+        sky:Combo(sid, "Sky", options, current, function(idx)
+            local value = options[(tonumber(idx) or 0) + 1]
+            if value and value ~= "Pick one" then setSky(value) end
+        end)
+    end
     local darkNow = (state.values.lighting or {}).Preset == "dark"
     local lid = "rv_light_" .. session .. "_" .. state.revision
     local lightOptions = {"Normal", "Dark"}
