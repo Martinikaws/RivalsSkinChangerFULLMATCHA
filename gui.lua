@@ -34,6 +34,80 @@ local SKY_GROUPS = {
     {name = "Cloudy 13-25", skies = numbered("cloudy", 13, 25)},
     {name = "Space", skies = {"galaxy", "blue nebula", "gold nebula"}},
 }
+-- Sound library. Rivals and Roblox sounds always play; community uploads
+-- are public but their owners can remove them.
+local SOUND_LIBRARY = {
+    {name = "Rivals", sounds = {
+        {"Hitmarker tick", "13110130082"},
+        {"Headshot crack", "16537449730"},
+        {"Elimination 1", "16530229616"},
+        {"Elimination 2", "16530229541"},
+        {"Elimination 3", "16530229695"},
+        {"Target shatter", "14441658101"},
+        {"RPG explosion", "13455969017"},
+        {"Equip click", "13158735106"},
+        {"Landing", "16736552001"},
+        {"Jump", "16736552098"},
+        {"Duel timer tick", "17826390328"},
+        {"Click", "177266782"},
+    }},
+    {name = "Roblox", sounds = {
+        {"Classic hit", "12222046"},
+        {"Button", "12221967"},
+        {"Electronic ping", "12221990"},
+        {"Glass break", "12222005"},
+        {"Kerplunk", "12222054"},
+        {"Fast click", "12221976"},
+        {"Bright click", "15675059323"},
+        {"Cute pop", "15675055424"},
+        {"Notification", "17208361335"},
+        {"Coin", "127645268874265"},
+        {"Pinball bell", "16480570986"},
+        {"8-bit blip", "16480580213"},
+        {"Metal click", "16480551554"},
+        {"Sparkle ding", "9126073001"},
+        {"Cannon blast", "3149249837"},
+    }},
+    {name = "Hit sounds", sounds = {
+        {"Undertale critical hit", "140181868959125"},
+        {"Hit sound", "139520673393967"},
+        {"Undertale attack hit", "140721035016341"},
+        {"Fist hit", "140604838213617"},
+        {"TF2 critical hit", "137392628136734"},
+        {"AvA punch", "138208560796742"},
+        {"Rock hit", "82708037443413"},
+        {"Spear hit", "135278368445325"},
+        {"Persona 5 hit", "140706017778464"},
+        {"Energy sword hit", "139503070303020"},
+        {"Stone hit", "3581383408"},
+        {"8-bit impact", "109598434966968"},
+        {"Minecraft hit", "73369656122118"},
+        {"Car hit", "1897654568"},
+        {"Beam hit", "103134129110384"},
+    }},
+    {name = "Community", sounds = {
+        {"CoD hitmarker", "138832207290954"},
+        {"Quake hitmarker", "1455817260"},
+        {"GameSense hitmarker", "4817809188"},
+        {"Minecraft hitmarker", "127091812835195"},
+        {"Minecraft bow ding", "135478009117226"},
+        {"MLG hitmarker", "121351852050830"},
+        {"Head hitmarker", "17724154662"},
+        {"TF2 hitsound", "138901307926331"},
+        {"osu! hitsound", "123941247147792"},
+        {"Bubble pop", "119697580657161"},
+        {"CS:GO headshot", "133002449941130"},
+        {"Arsenal headshot", "18513634637"},
+        {"Fortnite headshot", "2513174484"},
+        {"Rust headshot", "128633263668964"},
+        {"Battlefield headshot", "70528023820006"},
+        {"PHIGHTING headshot", "138549196892842"},
+        {"TF2 kill", "124543461907751"},
+        {"Among Us kill", "130456049552264"},
+        {"MM2 knife kill", "97347330766907"},
+        {"Double kill", "116907610084760"},
+    }},
+}
 local SKY_GROUP_NAMES = {}
 for _, g in ipairs(SKY_GROUPS) do SKY_GROUP_NAMES[#SKY_GROUP_NAMES + 1] = g.name end
 local RANKS = {"Archnemesis", "Nemesis", "Onyx 3", "Onyx 2", "Onyx 1", "Diamond 3", "Diamond 2", "Diamond 1",
@@ -464,6 +538,79 @@ local function job(label, fn)
     end)
 end
 local drawTab
+-- Sound preview. The menu can't play audio, but the game plays
+-- SoundLibrary.EquipSounds every time you switch weapons, so for a few
+-- seconds those become the sound being previewed. They are Luau strings
+-- reached through the module's table (same registry route as the changer),
+-- rewritten in place and put back afterwards.
+local DEFAULT_SOUNDS = {Hit = "13110130082", Critical = "16537449730", Kill = "16530229616"}
+local PREVIEW_SECONDS = 10
+local previewing = false
+
+local function rdq(a) local ok, v = pcall(memory_read, "uintptr_t", a) return ok and v or nil end
+local function rdi(a) local ok, v = pcall(memory_read, "int", a) return ok and v or nil end
+local function readLuaString(ts) local ok, v = pcall(memory_read, "string", ts + 24) return ok and v or nil end
+local function writeLuaString(ts, text)
+    for i = 1, #text do memory_write("byte", ts + 24 + i - 1, string.byte(text, i)) end
+    memory_write("byte", ts + 24 + #text, 0)
+    memory_write("int", ts + 20, #text)
+end
+
+local function equipSoundStrings()
+    local modules = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
+    local ms = modules and modules:FindFirstChild("SoundLibrary")
+    local thread = ms and rdq(ms.Address + 0x170)
+    local g = thread and rdq(thread + 0x18)
+    local reg = g and rdq(g + 0x620)
+    local slot, arr = ms and rdi(ms.Address + 0x178), reg and rdq(reg + 0x20)
+    local t = arr and slot and slot > 0 and rdq(arr + (slot - 1) * 16)
+    if not t then return {} end
+    local base = rdq(t + 0x18)
+    local okL, l = pcall(memory_read, "byte", t + 6)
+    if not base or not okL or l > 12 then return {} end
+    for i = 0, 2 ^ l - 1 do
+        local node = base + i * 32
+        local key = rdq(node + 16)
+        if key and readLuaString(key) == "EquipSounds" then
+            local list = rdq(node)
+            local size, items = list and rdi(list + 8), list and rdq(list + 0x20)
+            local out = {}
+            for j = 0, (size or 0) - 1 do
+                local ts = rdq(items + j * 16)
+                local text = ts and readLuaString(ts)
+                if text and text:find("^rbxassetid://%d+$") then out[#out + 1] = ts end
+            end
+            return out
+        end
+    end
+    return {}
+end
+
+local function previewSound(id)
+    if previewing then return "Already on - switch weapons to hear it." end
+    local digits = id and tostring(id):match("(%d+)$")
+    if not digits then return "That one is muted - nothing to play." end
+    local text = "rbxassetid://" .. digits
+    if #text > 31 then return "That id is too long to preview." end
+    local strings = equipSoundStrings()
+    if #strings == 0 then return "Preview not available right now." end
+    local saved = {}
+    for _, ts in ipairs(strings) do
+        saved[#saved + 1] = {ts, readLuaString(ts)}
+        writeLuaString(ts, text)
+    end
+    previewing = true
+    -- task.delay does not run in Matcha; a spawned wait does.
+    task.spawn(function()
+        task.wait(PREVIEW_SECONDS)
+        for _, s in ipairs(saved) do
+            if readLuaString(s[1]) == text then writeLuaString(s[1], s[2]) end
+        end
+        previewing = false
+    end)
+    return "Switch weapons (1-4) in the next " .. PREVIEW_SECONDS .. " s to hear it."
+end
+
 local function refreshTab()
     if state.refreshQueued then return end
     state.refreshQueued = true
@@ -699,6 +846,44 @@ drawTab = function(tab)
     sky:Combo(lid, "Lighting", lightOptions, lightIndex, function(idx)
         setMapping("lighting", "Preset", lightValues[(tonumber(idx) or 0) + 1])
     end)
+
+    -- Hit, headshot and kill sounds: a Roblox audio id each, "none" mutes,
+    -- empty keeps the game's own.
+    -- A fixed-height section scrolls (dropdowns can't), so each sound is a
+    -- page with the whole list as buttons; the current pick is marked.
+    local soundSlots = {{"Hit", "Body hit"}, {"Critical", "Headshot"}, {"Kill", "Kill"}}
+    local soundPages = {}
+    for _, slot in ipairs(soundSlots) do soundPages[#soundPages + 1] = slot[2] end
+    local sounds = tab:Section("Sounds", "Left", soundPages, 260)
+    local slot = soundSlots[(sounds.page or 0) + 1] or soundSlots[1]
+    local key = slot[1]
+    local current = (state.values.sounds or {})[key]
+    local currentLow = current and tostring(current):lower()
+    sounds:Button("Preview this sound", function()
+        state.previewNote = previewSound(current or DEFAULT_SOUNDS[key])
+        refreshTab()
+    end)
+    sounds:Text(state.previewNote or "Plays on your next weapon switch (hold a weapon).")
+    local function choice(label, id)
+        local picked = (id == nil and current == nil) or (id ~= nil and id == currentLow)
+        sounds:Button((picked and "> " or "   ") .. label, function()
+            setMapping("sounds", key, id)
+            refreshTab()
+        end)
+    end
+    choice("Game default", nil)
+    choice("Mute", "none")
+    for _, group in ipairs(SOUND_LIBRARY) do
+        sounds:Text(group.name)
+        for _, g in ipairs(group.sounds) do choice(g[1], g[2]) end
+    end
+    sounds:Spacing()
+    sounds:InputText("rv_snd_" .. session .. "_" .. key, "Custom id", current and currentLow ~= "none" and current or "", function(value)
+        if type(value) ~= "string" then return end
+        local v = trim(value)
+        setMapping("sounds", key, v ~= "" and v or nil)
+    end)
+    sounds:Text("Any Roblox audio id the game can play.")
 
     local credits = tab:Section("Credits", "Left")
     credits:Text("Skin changer by Martini")
