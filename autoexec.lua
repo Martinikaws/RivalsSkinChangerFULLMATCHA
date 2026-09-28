@@ -1,9 +1,10 @@
 -- Rivals changer - autoexec entry point.
 --
--- This loads the in-game menu only. The menu applies your saved config by
--- itself once Rivals has loaded (Auto-apply on join), and then stays in the
--- "Rivals Changer" tab, so you can change a skin mid-game and press
--- Save & Apply without rejoining.
+-- This loads the GUI only: a window drawn on screen (Right Shift shows and
+-- hides it, unless you changed the key in its Settings). It applies your saved
+-- config by itself once Rivals has loaded (Auto-apply on join), and stays
+-- there, so you can change a skin mid-game and press Save & Apply without
+-- rejoining.
 --
 -- Do not also put the changer (RivalsSkinSwapper.lua) in this folder: it would
 -- run a second time and the second run is refused by its own lock.
@@ -26,16 +27,17 @@ local function download()
     if ok and type(body) == "string" and #body > 0 then return body, "github" end
 end
 
--- Autoexec runs before Matcha's UI binding exists, and a yield out here would
--- throw, so the waiting happens in its own thread.
+-- Autoexec runs before the game exists, and a yield out here would throw, so
+-- the waiting happens in its own thread. The window needs the player and the
+-- camera.
 task.spawn(function()
-    local deadline = tick() + 120
-    while tick() < deadline and not (UI and type(UI.AddTab) == "function") do
+    local deadline = tick() + 300
+    while tick() < deadline do
+        local ok, ready = pcall(function()
+            return game:IsLoaded() and game:GetService("Players").LocalPlayer ~= nil and workspace.CurrentCamera ~= nil
+        end)
+        if ok and ready then break end
         task.wait(0.5)
-    end
-    if not (UI and type(UI.AddTab) == "function") then
-        warn("[Rivals GUI] Matcha's UI binding never appeared - menu not loaded.")
-        return
     end
 
     local source, from = localCopy()
@@ -47,7 +49,7 @@ task.spawn(function()
 
     local fn, err = loadstring(source)
     if type(fn) ~= "function" then
-        warn("[Rivals GUI] Could not compile the menu: " .. tostring(err))
+        warn("[Rivals GUI] Could not compile the GUI: " .. tostring(err))
         return
     end
     local okRun, runErr = pcall(fn)
