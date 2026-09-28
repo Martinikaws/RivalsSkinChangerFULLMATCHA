@@ -1426,6 +1426,85 @@ local function drawSounds(x, y, w, h)
     end
 end
 
+-- Spoof: your name, level, streak and badges as you see them, saved as the
+-- [Spoof] section; the changer shows them from the next Save & Apply. Only you
+-- see them, except the device, which the server is told.
+local SPOOF_FIELDS = {
+    {key = "Name", label = "Display name", hint = "Your display name"},
+    {key = "Username", label = "Username", hint = "@username"},
+    {key = "Level", label = "Level", number = true},
+    {key = "Streak", label = "Win streak", number = true},
+    {key = "ELO", label = "ELO", number = true},
+}
+local SPOOF_BADGES = {{"Influencer", "Influencer badge"}, {"Employee", "Roblox employee badge"}, {"Trustworthy", "Trustworthy"}}
+local DEVICE_CHOICES = {{"Real", nil}, {"PC", "MouseKeyboard"}, {"Mobile", "Touch"}, {"Controller", "Gamepad"}, {"VR", "VR"}}
+
+-- A text box tied to one [Spoof] key: it starts at the saved value and saves
+-- when you press Enter or click away.
+local function spoofBox(field, x, y, w)
+    local id = "spoof_" .. field.key
+    local saved = (state.values.spoof or {})[field.key] or ""
+    if state.inputs[id] == nil then state.inputs[id] = saved end
+    text(field.label, x, y, C.dim, 12, 5)
+    textbox(id, x, y + 18, w, 30, field.hint or "Real")
+    if focus ~= id then
+        local v = trim(state.inputs[id] or "")
+        if field.number and v ~= "" and not v:match("^%d+$") then
+            state.inputs[id] = saved -- digits only; keep what was there
+        elseif v ~= saved then
+            setMapping("spoof", field.key, v ~= "" and v or nil)
+        end
+    end
+end
+
+local function drawSpoof(x, y, w, h)
+    rect(x, y, w, h, C.panel, 2, 8)
+    local cx = x + 20
+    text("Spoof", cx, y + 14, C.text, 15, 5, true)
+    text("How your name and stats look to you. The server keeps the real ones. Empty = real.", cx, y + 36, C.dim, 12, 5)
+
+    local cy, colW = y + 66, math.floor((w - 60) / 2)
+    spoofBox(SPOOF_FIELDS[1], cx, cy, colW)
+    spoofBox(SPOOF_FIELDS[2], cx + colW + 20, cy, colW)
+    cy = cy + 62
+    local third = math.floor((w - 80) / 3)
+    for i = 3, 5 do spoofBox(SPOOF_FIELDS[i], cx + (i - 3) * (third + 20), cy, third) end
+    cy = cy + 70
+
+    local values = state.values.spoof or {}
+    for _, badge in ipairs(SPOOF_BADGES) do
+        text(badge[2], cx, cy + 8, C.text, 13, 5)
+        local now = (values[badge[1]] or ""):lower()
+        local idx = (now == "true" and 2) or (now == "false" and 3) or 1
+        local pick = segmented(x + w - 260, cy, 240, 30, {"Real", "On", "Off"}, idx)
+        if pick and pick ~= idx then setMapping("spoof", badge[1], ({false, "true", "false"})[pick] or nil) end
+        cy = cy + 38
+    end
+
+    cy = cy + 8
+    line(cx, cy, x + w - 20, cy, C.line, 3, 1)
+    cy = cy + 14
+    text("Device Icon (Pro Matcha Only)", cx, cy + 8, C.text, 13, 5, true)
+    text("Everyone sees this one - it is sent to the server. Needs Matcha's Hybrid Mode.", cx, cy + 28, C.bad, 12, 5)
+    local deviceNow = values.Device
+    local di = 1
+    local labels = {}
+    for i, d in ipairs(DEVICE_CHOICES) do
+        labels[i] = d[1]
+        if d[2] and deviceNow and d[2]:lower() == deviceNow:lower() then di = i end
+    end
+    local dp = segmented(cx, cy + 48, 400, 30, labels, di)
+    if dp and dp ~= di then setMapping("spoof", "Device", DEVICE_CHOICES[dp][2]) end
+
+    local by = y + h - 44
+    text("Shows from the next Save & Apply.", cx, by + 8, C.faint, 12, 5)
+    if button(x + w - 200, by, 180, 30, "Turn it all off") then
+        for _, f in ipairs(SPOOF_FIELDS) do setMapping("spoof", f.key, nil); state.inputs["spoof_" .. f.key] = "" end
+        for _, b in ipairs(SPOOF_BADGES) do setMapping("spoof", b[1], nil) end
+        setMapping("spoof", "Device", nil)
+    end
+end
+
 local function drawSettings(x, y, w, h)
     rect(x, y, w, h, C.panel, 2, 8)
     local cx, cy = x + 20, y + 18
@@ -1486,8 +1565,9 @@ end
 
 -- The window
 
-local TABS = {"Skins", "Cosmetics", "Visuals", "Sounds", "Settings"}
-local DRAW = {Skins = drawSkins, Cosmetics = drawCosmetics, Visuals = drawVisuals, Sounds = drawSounds, Settings = drawSettings}
+local TABS = {"Skins", "Cosmetics", "Visuals", "Sounds", "Spoof", "Settings"}
+local DRAW = {Skins = drawSkins, Cosmetics = drawCosmetics, Visuals = drawVisuals, Sounds = drawSounds,
+    Spoof = drawSpoof, Settings = drawSettings}
 local function viewport()
     local ok, vp = pcall(function() return workspace.CurrentCamera.ViewportSize end)
     return ok and vp or V2(1920, 1080)
@@ -1519,7 +1599,7 @@ local function drawWindow(slide)
     rect(x - 1, y - 1, w + 2, h + 2, C.line, 0, 11)
     rect(x, y, w, h, C.bg, 1, 10)
     text("Rivals", x + 16, y + 12, C.text, 16, 5, true)
-    text(".changer", x + 16 + textWidth("Rivals", 16, true) + 2, y + 12, C.accent, 16, 5, true)
+    text("Skin Changer", x + 16 + textWidth("Rivals ", 16, true), y + 12, C.accent, 16, 5, true)
     if button(x + w - 36, y + 8, 26, 24, "x") then state.open = false end
     line(x, y + 40, x + w, y + 40, C.line, 2, 1)
 
