@@ -1384,6 +1384,80 @@ local function drawVisuals(x, y, w, h)
     end
 end
 
+-- Tracers: the colour of your shots, for every gun or one gun at a time,
+-- saved as the [Tracers] section. The game draws them, so they don't lag.
+local TRACER_COLORS = {
+    {"Red", "ff2d2d"}, {"Orange", "ff7a00"}, {"Gold", "ffc400"}, {"Yellow", "ffee00"}, {"Lime", "a6ff00"},
+    {"Green", "2dff5a"}, {"Mint", "00ffa6"}, {"Cyan", "00e5ff"}, {"Blue", "2d6bff"}, {"Purple", "8a2dff"},
+    {"Pink", "ff4fd8"}, {"White", "ffffff"},
+}
+local function hexColor(hex)
+    return RGB(tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16))
+end
+
+local function drawTracers(x, y, w, h)
+    local values = state.values.tracers or {}
+    local lw = 210
+    rect(x, y, lw, h, C.panel, 2, 8)
+    text("GUNS", x + 12, y + 10, C.faint, 11, 5, true)
+    textbox("tracerSearch", x + 10, y + 28, lw - 20, 28, "Search...")
+    local names, q = {}, query("tracerSearch")
+    if q == "" then names[1] = "All guns" end
+    for _, wpn in ipairs(catalog.weapons) do if matches(q, wpn.name) then names[#names + 1] = wpn.name end end
+    local picked = sideList("tracerGuns", x + 8, y + 64, lw - 22, h - 72, names, state.tracerGun or "All guns",
+        function(n) return values[n == "All guns" and "Color" or n] ~= nil end)
+    if picked then state.tracerGun = picked; resetScroll("tracerGrid") end
+
+    local gun = state.tracerGun or "All guns"
+    local key = gun == "All guns" and "Color" or gun
+    local current = values[key] and tostring(values[key]):lower()
+    local rx, rw = x + lw + 12, w - lw - 12
+    rect(rx, y, rw, h, C.panel, 2, 8)
+    text(gun == "All guns" and "Tracers - every gun" or ("Tracers - " .. gun), rx + 16, y + 14, C.text, 15, 5, true)
+    text("Now: " .. (current or (key == "Color" and "the game's own" or "same as All guns")), rx + 16, y + 36, C.dim, 12, 5)
+
+    local items = {{name = key == "Color" and "Game's own" or "Same as all", none = true},
+        {name = "Rainbow", value = "rainbow", colors = {RGB(255, 60, 60), RGB(60, 120, 255), RGB(255, 230, 0)}}}
+    for _, c in ipairs(TRACER_COLORS) do items[#items + 1] = {name = c[1], value = c[2], colors = {hexColor(c[2])}} end
+    local gy = y + 62
+    local hit = tileGrid("tracerGrid", rx + 12, gy, rw - 30, h - (gy - y) - 94, items, function(it)
+        if it.none then return current == nil end
+        return it.value == current
+    end)
+    if hit then setMapping("tracers", key, hit.value) end
+
+    -- Speed, for every gun: 100% is the game's own, low is slow like the
+    -- Keyper. Saved when you let go, so dragging doesn't re-apply every frame.
+    local sy = y + h - 84
+    local sp = state.tracerSpeed or tonumber(values.Speed) or 100
+    text("Speed", rx + 16, sy + 6, C.dim, 13, 5)
+    local bx, bw = rx + 72, rw - 250
+    local t = (sp - 5) / 195
+    rect(bx, sy + 12, bw, 4, C.card, 3, 2)
+    rect(bx, sy + 12, math.max(1, bw * t), 4, C.accent, 4, 2)
+    circle(bx + bw * t, sy + 14, 7, C.text, 5, true)
+    if M.press and over(bx - 8, sy, bw + 16, 28) then state.tracerDrag = true end
+    if state.tracerDrag then
+        if M.down then
+            sp = math.floor((5 + 195 * math.max(0, math.min(1, (M.x - bx) / bw))) / 5 + 0.5) * 5
+            state.tracerSpeed = sp
+            M.dragged = true
+        else
+            state.tracerDrag, state.tracerSpeed = nil, nil
+            setMapping("tracers", "Speed", sp ~= 100 and tostring(sp) or nil)
+        end
+    end
+    text(sp .. "%" .. (sp <= 25 and "  - slow, like the Keyper" or (sp == 100 and "  - the game's own" or "")),
+        bx + bw + 16, sy + 6, C.text, 13, 5)
+
+    local cy = y + h - 42
+    textbox("tracerHex", rx + 12, cy, rw - 140, 30, "Any colour, like ff66cc")
+    if button(rx + rw - 120, cy, 108, 30, "Use colour") then
+        local v = trim(state.inputs.tracerHex or ""):gsub("^#", ""):lower()
+        if v:match("^%x%x%x%x%x%x$") then setMapping("tracers", key, v) else state.status = "Colours are 6 hex digits, like ff66cc" end
+    end
+end
+
 local function drawSounds(x, y, w, h)
     local lw = 184
     rect(x, y, lw, h, C.panel, 2, 8)
@@ -1576,8 +1650,8 @@ end
 
 -- The window
 
-local TABS = {"Skins", "Cosmetics", "Visuals", "Sounds", "Spoof", "Settings"}
-local DRAW = {Skins = drawSkins, Cosmetics = drawCosmetics, Visuals = drawVisuals, Sounds = drawSounds,
+local TABS = {"Skins", "Cosmetics", "Visuals", "Tracers", "Sounds", "Spoof", "Settings"}
+local DRAW = {Skins = drawSkins, Cosmetics = drawCosmetics, Visuals = drawVisuals, Tracers = drawTracers, Sounds = drawSounds,
     Spoof = drawSpoof, Settings = drawSettings}
 local function viewport()
     local ok, vp = pcall(function() return workspace.CurrentCamera.ViewportSize end)
