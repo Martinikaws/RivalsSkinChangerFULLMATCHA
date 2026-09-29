@@ -1431,6 +1431,7 @@ end
 -- see them, except the device, which the server is told.
 local SPOOF_FIELDS = {
     {key = "Name", label = "Display name", hint = "Your display name"},
+    {key = "Username", label = "@Username", hint = "Not longer than your real one"},
     {key = "Level", label = "Level", number = true},
     {key = "Streak", label = "Win streak", number = true},
     {key = "ELO", label = "ELO", number = true},
@@ -1462,11 +1463,12 @@ local function drawSpoof(x, y, w, h)
     text("Spoof", cx, y + 14, C.text, 15, 5, true)
     text("How your name and stats look to you. The server keeps the real ones. Empty = real.", cx, y + 36, C.dim, 12, 5)
 
-    local cy = y + 66
-    spoofBox(SPOOF_FIELDS[1], cx, cy, w - 40)
+    local cy, colW = y + 66, math.floor((w - 60) / 2)
+    spoofBox(SPOOF_FIELDS[1], cx, cy, colW)
+    spoofBox(SPOOF_FIELDS[2], cx + colW + 20, cy, colW)
     cy = cy + 62
     local third = math.floor((w - 80) / 3)
-    for i = 2, 4 do spoofBox(SPOOF_FIELDS[i], cx + (i - 2) * (third + 20), cy, third) end
+    for i = 3, 5 do spoofBox(SPOOF_FIELDS[i], cx + (i - 3) * (third + 20), cy, third) end
     cy = cy + 70
 
     local values = state.values.spoof or {}
