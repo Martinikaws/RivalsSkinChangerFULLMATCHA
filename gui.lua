@@ -39,6 +39,17 @@ assert(type(writefile) == "function" and type(readfile) == "function" and type(i
     "Matcha file functions are required.")
 
 -- A second run replaces the first; the menu-tab GUI steps aside too.
+-- Only in RIVALS. (The id is 0 until the game has loaded; started that early,
+-- the window closes itself once the game turns out to be another one.)
+local function otherGame()
+    local ok, id = pcall(function() return tonumber(game.GameId) end)
+    return ok and id ~= nil and id ~= 0 and id ~= RIVALS_GAME_ID
+end
+if otherGame() then
+    print("[Rivals GUI] Not RIVALS - the GUI stays off in this game.")
+    return
+end
+
 if _G.__RivalsDrawnGui then pcall(_G.__RivalsDrawnGui.stop) end
 pcall(function() UI.RemoveTab("Rivals Changer") end)
 
@@ -1750,6 +1761,10 @@ end)
 task.spawn(function()
     local lastError
     while alive and _G.__RivalsGuiSession == guiToken do
+        if otherGame() then
+            print("[Rivals GUI] Not RIVALS - the GUI stays off in this game.")
+            break
+        end
         local ok, err = pcall(frame)
         if not ok and tostring(err) ~= lastError then
             lastError = tostring(err)

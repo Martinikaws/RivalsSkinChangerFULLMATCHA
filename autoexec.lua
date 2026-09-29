@@ -11,6 +11,7 @@
 
 local CANDIDATES = {"RivalsSkinGui.lua", "workspace/RivalsSkinGui.lua", "scripts/RivalsSkinGui.lua"}
 local URL = "https://raw.githubusercontent.com/Martinikaws/RivalsSkinChangerFULLMATCHA/refs/heads/main/gui.lua"
+local RIVALS_GAME_ID = 6035872082
 
 local function localCopy()
     for _, path in ipairs(CANDIDATES) do
@@ -38,6 +39,13 @@ task.spawn(function()
         end)
         if ok and ready then break end
         task.wait(0.5)
+    end
+
+    -- Only in RIVALS.
+    local okId, gameId = pcall(function() return tonumber(game.GameId) end)
+    if okId and gameId ~= RIVALS_GAME_ID then
+        print("[Rivals GUI] Not RIVALS - nothing loaded in this game.")
+        return
     end
 
     local source, from = localCopy()
