@@ -168,6 +168,9 @@ local state = {
     skyGroup = 1, soundSlot = 1, soundGroup = 1,
     inputs = {}, scroll = {}, mouseOffset = 0, open = true,
     toggleKey = DEFAULT_TOGGLE, accent = DEFAULT_ACCENT,
+    -- "You own" lists show only what you own; the window stays hidden when
+    -- autoexec starts it.
+    ownedOnly = true, showOnAutoexec = false,
 }
 local catalog = {weapons = {}, wraps = {}, finishers = {}, charms = {}, skyFaces = {}, loaded = false}
 
@@ -217,6 +220,56 @@ local function markChanged()
     state.dirty = configText() ~= state.cleanText
     state.status = state.dirty and "Changed - press Save & Apply." or "No changes."
 end
+-- The changer trades two models for each line, so a skin, finisher or charm
+-- can only be in one line: it skips a second line that uses one again.
+-- Returns those lines, in the order the changer would skip them.
+local function configClashes()
+    local out, section, touched, used, swaps = {}, "skins", {}, {}, {}
+    for _, line in ipairs(state.lines) do
+        local h = header(line)
+        if h then
+            section = h
+        elseif section == "skins" then
+            local w, o, t = swapLine(line)
+            if w then
+                swaps[#swaps + 1] = {o, t}
+            else
+                local k, v = pair(line)
+                local low = v and v:lower()
+                if k and v and low ~= "default" and low ~= "standard" then
+                    if touched[v] or touched[k] then
+                        out[#out + 1] = k .. " -> " .. v
+                    else
+                        touched[v], touched[k] = true, true
+                    end
+                end
+            end
+        elseif section == "finishers" or section == "charms" then
+            local k, v = pair(line)
+            if k and v then
+                -- Every rank of a season charm is the same model.
+                local model = section == "charms" and (v:match("^(Season %d+)%s") or v) or v
+                used[section] = used[section] or {}
+                local u = used[section]
+                if u[k] or u[model] then out[#out + 1] = k .. " -> " .. v else u[k], u[model] = true, true end
+            end
+        end
+    end
+    -- The changer runs the swaps after the Weapon=Skin lines.
+    for _, sw in ipairs(swaps) do
+        if touched[sw[2]] or touched[sw[1]] then
+            out[#out + 1] = sw[1] .. " -> " .. sw[2]
+        else
+            touched[sw[2]], touched[sw[1]] = true, true
+        end
+    end
+    return out
+end
+local function clashWarning()
+    local bad = configClashes()
+    if #bad == 0 then return nil end
+    return "Two lines use the same item - the changer skips: " .. table.concat(bad, ", ")
+end
 local function loadConfig()
     local raw = isfile(FILE) and readfile(FILE) or nil
     local content = (raw or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
@@ -233,7 +286,7 @@ local function loadConfig()
     indexConfig()
     state.readable = true
     state.cleanText, state.dirty = configText(), false
-    state.status = raw and "Loaded your configuration." or "Nothing saved yet - pick something."
+    state.status = clashWarning() or (raw and "Loaded your configuration." or "Nothing saved yet - pick something.")
 end
 -- One key per section. A nil value removes the line; unknown sections get a
 -- new [Header] at the end. Lines this GUI doesn't understand are kept.
@@ -295,6 +348,34 @@ local function setSwap(weapon, owned, target)
     indexConfig()
     markChanged()
 end
+-- No hands: [NoHands] has Weapon=true lines, and All=true for every weapon
+-- (a Weapon=false line then keeps that one's arms).
+local function handsHidden(weapon)
+    local v = state.values.nohands or {}
+    local own = v[weapon] and tostring(v[weapon]):lower()
+    if own == "true" then return true elseif own == "false" then return false end
+    return tostring(v.All or ""):lower() == "true"
+end
+local function toggleHands(weapon)
+    local all = tostring((state.values.nohands or {}).All or ""):lower() == "true"
+    if handsHidden(weapon) then
+        setMapping("nohands", weapon, all and "false" or nil)
+    else
+        setMapping("nohands", weapon, (not all) and "true" or nil)
+    end
+end
+-- Makes a pick, then takes it back if it would put one item in two lines.
+local function guarded(change, target)
+    local before, was = state.lines, #configClashes()
+    change()
+    if #configClashes() > was then
+        state.lines = before
+        indexConfig()
+        markChanged()
+        state.status = target .. " is already used by another line. Two can't look like the same one - change that line first."
+        if type(notify) == "function" then pcall(notify, "Rivals Skin Changer", state.status, 6) end
+    end
+end
 local function saveConfig()
     assert(state.readable, "Reload the configuration before saving.")
     local current = isfile(FILE) and readfile(FILE) or nil
@@ -342,6 +423,9 @@ local function loadSettings()
         local key = tonumber(body:match("togglekey%s*=%s*(%d+)"))
         state.toggleKey = key and KEY_NAMES[key] and key or DEFAULT_TOGGLE
         state.accent = body:match("accent%s*=%s*(%x%x%x%x%x%x)") or DEFAULT_ACCENT
+        state.ownedOnly = body:match("ownedonly%s*=%s*(%d)") ~= "0"
+        state.showOnAutoexec = body:match("showonautoexec%s*=%s*(%d)") == "1"
+        state.noticeSeen = body:match("noticeseen%s*=%s*(%d)") == "1"
     end
     if auto == nil then
         local okScan, found = pcall(autoexecLoadsGui)
@@ -353,8 +437,91 @@ local function saveSettings()
     pcall(writefile, SETTINGS, "autoapply=" .. (state.autoApply and "1" or "0") .. "\n"
         .. "mouseoffset=" .. tostring(state.mouseOffset) .. "\n"
         .. "togglekey=" .. tostring(state.toggleKey) .. "\n"
-        .. "accent=" .. tostring(state.accent) .. "\n")
+        .. "accent=" .. tostring(state.accent) .. "\n"
+        .. "ownedonly=" .. (state.ownedOnly and "1" or "0") .. "\n"
+        .. "showonautoexec=" .. (state.showOnAutoexec and "1" or "0") .. "\n"
+        .. "noticeseen=" .. (state.noticeSeen and "1" or "0") .. "\n")
 end
+
+-- What you own
+--
+-- Your player data has a CosmeticInventory table: a cosmetic's name maps to
+-- true, or to a table of the weapons you own it for ({IsUniversal = true} for
+-- all of them). It sits at PlayerDataController.CurrentData.Data, all Lua
+-- tables, read from memory through the registry like the changer reads the
+-- item libraries. nil when it can't be read; the lists then show everything.
+local inventory = nil
+local readInventory
+do
+    local mrd = memory_read
+    local function rd(a) local ok, v = pcall(mrd, "uintptr_t", a) return ok and v or nil end
+    local function rint(a) local ok, v = pcall(mrd, "int", a) return ok and v or nil end
+    local function rbyte(a) local ok, v = pcall(mrd, "byte", a) return ok and v or nil end
+    -- Roblox build 02c37bc (Sep 30 2026): an object's type is byte 1 of its
+    -- header, a table's lsizenode byte 4, and a thread's global state +0x68.
+    local TAG_TABLE, TAG_THREAD = 7, 10
+    local function isTable(t) return t and t > 0x10000 and rbyte(t + 1) == TAG_TABLE end
+    local function moduleTable(ms)
+        local thread = ms and ms.Address and rd(ms.Address + 0x170)
+        if not thread or thread < 0x10000 or rbyte(thread + 1) ~= TAG_THREAD then return nil end
+        local g = rd(thread + 0x68)
+        local reg = g and g > 0x10000 and rd(g + 0x620)
+        if not isTable(reg) then return nil end
+        local slot, size, arr = rint(ms.Address + 0x178), rint(reg + 8), rd(reg + 0x20)
+        if not slot or not size or not arr or slot < 1 or slot > size then return nil end
+        local t = rd(arr + (slot - 1) * 16)
+        return isTable(t) and t or nil
+    end
+    -- Every string key of a table: key -> {value, type tag}
+    local function fields(t)
+        local out = {}
+        if not isTable(t) then return out end
+        local base, l = rd(t + 0x18), rbyte(t + 4)
+        if not base or base < 0x10000 or not l or l > 16 then return out end
+        for i = 0, 2 ^ l - 1 do
+            local node = base + i * 32
+            local tt, kp = rint(node + 12), rd(node + 16)
+            if tt and tt ~= 0 and kp and kp > 0x10000 then
+                local ok, key = pcall(mrd, "string", kp + 24)
+                if ok and type(key) == "string" and #key > 0 and #key < 80 then out[key] = {rd(node), tt} end
+            end
+        end
+        return out
+    end
+    readInventory = function()
+        local ok, result = pcall(function()
+            local ps = game:GetService("Players").LocalPlayer.PlayerScripts
+            local ctl = moduleTable(ps.Controllers.PlayerDataController)
+            local cur = ctl and fields(ctl).CurrentData
+            local data = cur and fields(cur[1]).Data
+            local inv = data and fields(data[1]).CosmeticInventory
+            if not inv or not isTable(inv[1]) then return nil end
+            local out, n = {}, 0
+            for name, v in pairs(fields(inv[1])) do
+                n = n + 1
+                if v[2] == TAG_TABLE then
+                    local on = {}
+                    for weapon in pairs(fields(v[1])) do on[weapon] = true end
+                    out[name] = on
+                else
+                    out[name] = true
+                end
+            end
+            return n > 0 and out or nil
+        end)
+        inventory = ok and result or nil
+        return inventory ~= nil
+    end
+end
+-- Owned at all, or (for a skin) owned for that weapon.
+local function owns(name, weapon)
+    local e = inventory and inventory[name]
+    if e == true then return true end
+    if type(e) ~= "table" then return false end
+    return weapon == nil or e.IsUniversal == true or e[weapon] == true
+end
+-- Whether the "you own" lists are cut down to what you own.
+local function ownedOnly() return state.ownedOnly and inventory ~= nil end
 
 -- Item lists
 
@@ -370,6 +537,7 @@ local function jsAssignment(source, name)
 end
 
 local function loadCatalog()
+    readInventory()
     local out = {weapons = {}, wraps = {}, finishers = {}, charms = {}, skyFaces = {}, loaded = true}
     -- Weapons, their skins, pictures and rarities, as the site shows them.
     local okMap, map = pcall(function() return decode(fetch(SITE .. "skin_icon_map.json")) end)
@@ -556,13 +724,13 @@ local function equipSoundStrings()
     local modules = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
     local ms = modules and modules:FindFirstChild("SoundLibrary")
     local thread = ms and rdq(ms.Address + 0x170)
-    local g = thread and rdq(thread + 0x18)
+    local g = thread and rdq(thread + 0x68)
     local reg = g and rdq(g + 0x620)
     local slot, arr = ms and rdi(ms.Address + 0x178), reg and rdq(reg + 0x20)
     local t = arr and slot and slot > 0 and rdq(arr + (slot - 1) * 16)
     if not t then return {} end
     local base = rdq(t + 0x18)
-    local okL, l = pcall(memory_read, "byte", t + 6)
+    local okL, l = pcall(memory_read, "byte", t + 4)
     if not base or not okL or l > 12 then return {} end
     for i = 0, 2 ^ l - 1 do
         local node = base + i * 32
@@ -789,7 +957,7 @@ local function endFrame()
     for kind, list in pairs(Pool) do
         for i = Used[kind] + 1, #list do
             local c = Cache[kind][i]
-            if c.Visible ~= false then c.Visible = false; list[i].Visible = false end
+            if c and c.Visible ~= false then c.Visible = false; list[i].Visible = false end
         end
     end
     for key, slot in pairs(shownImages) do
@@ -1049,12 +1217,15 @@ end
 local function weaponEntry(name)
     for _, w in ipairs(catalog.weapons) do if w.name == name then return w end end
 end
-local function skinItems(w, exclude, searchId, withNone)
+-- ownedFor: a weapon name, to list only the skins you own for it.
+local function skinItems(w, exclude, searchId, withNone, ownedFor)
     local out = {}
     if withNone then out[1] = {name = "None", none = true} end
     local q = query(searchId)
+    local mine = ownedFor and ownedOnly()
     for _, skin in ipairs(w and w.skins or {}) do
-        if skin ~= exclude and matches(q, skin) then
+        if skin ~= exclude and matches(q, skin)
+            and (not mine or owns(skin, ownedFor) or (state.swaps[ownedFor] or {})[skin] ~= nil) then
             local info = w.info[skin] or {}
             out[#out + 1] = {name = skin, src = info.src, rarity = info.rarity}
         end
@@ -1198,6 +1369,10 @@ local function drawSkins(x, y, w, h)
     local sub = state.mode == "Switch" and ("Switch  -  " .. (current or "Default"))
         or ("Swap  -  " .. swapCount(weapon) .. " set")
     text(sub, rx + 148, y + 36, C.dim, 12, 5)
+    -- Your arms in first person, for this weapon.
+    if button(rx + rw - 366, y + 16, 142, 32, handsHidden(weapon) and "Hands: hidden" or "Hands: shown") then
+        toggleHands(weapon)
+    end
     local modeAt = segmented(rx + rw - 212, y + 16, 200, 32, {"Switch", "Swap"}, state.mode == "Switch" and 1 or 2)
     if modeAt then state.mode = modeAt == 1 and "Switch" or "Swap"; resetScroll("skinGrid") end
 
@@ -1241,9 +1416,16 @@ local function drawSkins(x, y, w, h)
             if it.none then return current == nil end
             return it.name == current
         end)
-        if hit then setMapping("skins", weapon, (not hit.none) and hit.name or nil) end
+        if hit and hit.none then
+            setMapping("skins", weapon, nil)
+        elseif hit then
+            guarded(function() setMapping("skins", weapon, hit.name) end, hit.name)
+        end
     elseif state.swapStep == 1 or not state.swapOwned[weapon] then
-        items = skinItems(wpn, nil, "skinSearch", false)
+        items = skinItems(wpn, nil, "skinSearch", false, weapon)
+        if #items == 0 and ownedOnly() and query("skinSearch") == "" then
+            text("You own no skins for this weapon. Settings > Lists shows every skin.", rx + 16, gy + 30, C.dim, 12, 5)
+        end
         local hit = tileGrid("skinGrid", rx + 12, gy, rw - 30, gridH, items, function(it)
             return it.name == state.swapOwned[weapon]
         end, function(it) return (state.swaps[weapon] or {})[it.name] and ">" or nil end)
@@ -1256,7 +1438,11 @@ local function drawSkins(x, y, w, h)
             if it.none then return target == nil end
             return it.name == target
         end)
-        if hit then setSwap(weapon, owned, (not hit.none) and hit.name or nil) end
+        if hit and hit.none then
+            setSwap(weapon, owned, nil)
+        elseif hit then
+            guarded(function() setSwap(weapon, owned, hit.name) end, hit.name)
+        end
     end
     local count = #items - ((items[1] and items[1].none) and 1 or 0)
     text(count .. " skin(s) for " .. weapon, rx + 14, y + h - 22, C.faint, 12, 5)
@@ -1286,7 +1472,7 @@ local function drawCosmetics(x, y, w, h)
     local sid = "cosOwnSearch" .. kind.key
     textbox(sid, x + 10, y + 66, lw - 20, 28, "Search...")
     local names, q = {}, query(sid)
-    for _, item in ipairs(list) do if matches(q, item.name) then names[#names + 1] = item.name end end
+    for _, item in ipairs(list) do if matches(q, item.name) and (values[item.name] ~= nil or not ownedOnly() or owns(item.name)) then names[#names + 1] = item.name end end
     local owned = state.owned[kind.key]
     local picked = sideList("cosOwned", x + 8, y + 102, lw - 22, h - 110, names, owned, function(n) return values[n] ~= nil end)
     if picked then state.owned[kind.key] = picked; resetScroll("cosGrid") end
@@ -1334,9 +1520,9 @@ local function drawCosmetics(x, y, w, h)
         if hit.none then
             setMapping(kind.section, owned, nil)
         elseif kind.key == "charms" and hit.name:match("^Season %d+$") then
-            setMapping("charms", owned, hit.name .. " " .. (state.rank[owned] or RANKS[1]))
+            guarded(function() setMapping("charms", owned, hit.name .. " " .. (state.rank[owned] or RANKS[1])) end, hit.name)
         else
-            setMapping(kind.section, owned, hit.name)
+            guarded(function() setMapping(kind.section, owned, hit.name) end, hit.name)
         end
     end
     local set = 0
@@ -1351,7 +1537,7 @@ local function drawVisuals(x, y, w, h)
     local rx, rw = x, w
     rect(rx, y, rw, h, C.panel, 2, 8)
     text("Skybox", rx + 16, y + 14, C.text, 15, 5, true)
-    text(skyNow ~= "" and ("Now: " .. skyNow .. "  -  shows on the next map or area load") or "Now: the game's own sky",
+    text(skyNow ~= "" and ("Now: " .. skyNow .. " (next map load)") or "Now: the game's own sky",
         rx + 16, y + 36, C.dim, 12, 5)
     local lightNow = ((state.values.lighting or {}).Preset or ""):lower()
     local li = lightNow == "dark" and 2 or (lightNow == "match" and 3 or 1)
@@ -1420,11 +1606,19 @@ local function drawTracers(x, y, w, h)
         {name = "Rainbow", value = "rainbow", colors = {RGB(255, 60, 60), RGB(60, 120, 255), RGB(255, 230, 0)}}}
     for _, c in ipairs(TRACER_COLORS) do items[#items + 1] = {name = c[1], value = c[2], colors = {hexColor(c[2])}} end
     local gy = y + 62
-    local hit = tileGrid("tracerGrid", rx + 12, gy, rw - 30, h - (gy - y) - 94, items, function(it)
+    local hit = tileGrid("tracerGrid", rx + 12, gy, rw - 30, h - (gy - y) - 132, items, function(it)
         if it.none then return current == nil end
         return it.value == current
     end)
     if hit then setMapping("tracers", key, hit.value) end
+
+    -- The game draws no tracers for the Energy Pistols; this turns them on.
+    local ey = y + h - 122
+    local epOn = tostring(values.EnergyPistolsTracers or ""):lower() == "true"
+    text("Energy Pistols tracers", rx + 16, ey, C.dim, 13, 5)
+    text("Not recommended with 50% speed or under", rx + 16, ey + 16, C.faint, 11, 5)
+    local ep = segmented(rx + rw - 152, ey, 140, 28, {"Off", "On"}, epOn and 2 or 1)
+    if ep then setMapping("tracers", "EnergyPistolsTracers", ep == 2 and "true" or nil) end
 
     -- Speed, for every gun: 100% is the game's own, low is slow like the
     -- Keyper. Saved when you let go, so dragging doesn't re-apply every frame.
@@ -1456,6 +1650,42 @@ local function drawTracers(x, y, w, h)
         local v = trim(state.inputs.tracerHex or ""):gsub("^#", ""):lower()
         if v:match("^%x%x%x%x%x%x$") then setMapping("tracers", key, v) else state.status = "Colours are 6 hex digits, like ff66cc" end
     end
+end
+
+-- Hands: your first-person arms, hidden on every weapon or one at a time,
+-- saved as the [NoHands] section. Only you see it.
+local function drawHands(x, y, w, h)
+    local allOn = tostring((state.values.nohands or {}).All or ""):lower() == "true"
+    local lw = 210
+    rect(x, y, lw, h, C.panel, 2, 8)
+    text("WEAPONS", x + 12, y + 10, C.faint, 11, 5, true)
+    textbox("handsSearch", x + 10, y + 28, lw - 20, 28, "Search...")
+    local names, q = {}, query("handsSearch")
+    if q == "" then names[1] = "Every weapon" end
+    for _, wpn in ipairs(catalog.weapons) do if matches(q, wpn.name) then names[#names + 1] = wpn.name end end
+    local picked = sideList("handsList", x + 8, y + 64, lw - 22, h - 72, names, state.handsFor or "Every weapon",
+        function(n)
+            if n == "Every weapon" then return allOn end
+            return handsHidden(n)
+        end)
+    if picked then state.handsFor = picked end
+
+    local who = state.handsFor or "Every weapon"
+    local every = who == "Every weapon"
+    local hiddenNow = every and allOn or (not every and handsHidden(who))
+    local rx, rw = x + lw + 12, w - lw - 12
+    rect(rx, y, rw, h, C.panel, 2, 8)
+    text("Hands - " .. (every and "every weapon" or who), rx + 16, y + 14, C.text, 15, 5, true)
+    text("Now: " .. (hiddenNow and "hidden" or "shown") .. ((not every and allOn) and "  (every weapon is set to hidden)" or ""),
+        rx + 16, y + 36, C.dim, 12, 5)
+    local p = segmented(rx + 16, y + 64, 260, 32, {"Shown", "Hidden"}, hiddenNow and 2 or 1)
+    if p and (p == 2) ~= hiddenNow then
+        if every then setMapping("nohands", "All", p == 2 and "true" or nil) else toggleHands(who) end
+    end
+    text("Your arms in first person are hidden while that weapon is out.", rx + 16, y + 112, C.dim, 12, 5)
+    text("The weapon still moves as if held. Only you see it.", rx + 16, y + 132, C.dim, 12, 5)
+    text("A green dot in the list marks a weapon whose hands are hidden.", rx + 16, y + 152, C.faint, 12, 5)
+    text("Shows from the next Save & Apply.", rx + 16, y + h - 26, C.faint, 12, 5)
 end
 
 local function drawSounds(x, y, w, h)
@@ -1548,22 +1778,29 @@ local function drawSpoof(x, y, w, h)
     text("Spoof", cx, y + 14, C.text, 15, 5, true)
     text("How your name and stats look to you. The server keeps the real ones. Empty = real.", cx, y + 36, C.dim, 12, 5)
 
-    local cy, colW = y + 66, math.floor((w - 60) / 2)
+    local cy, colW = y + 60, math.floor((w - 60) / 2)
     spoofBox(SPOOF_FIELDS[1], cx, cy, colW)
     spoofBox(SPOOF_FIELDS[2], cx + colW + 20, cy, colW)
     cy = cy + 62
     local third = math.floor((w - 80) / 3)
     for i = 3, 5 do spoofBox(SPOOF_FIELDS[i], cx + (i - 3) * (third + 20), cy, third) end
-    cy = cy + 70
+    cy = cy + 62
 
     local values = state.values.spoof or {}
+    -- The effect on your name: the game's gold (Prime) or purple (Contraband).
+    text("Name effect", cx, cy + 8, C.text, 13, 5)
+    local effectNow = (values.Effect or ""):lower()
+    local ei = (effectNow == "none" and 2) or (effectNow == "prime" and 3) or (effectNow == "contraband" and 4) or 1
+    local ep = segmented(x + w - 380, cy, 360, 30, {"Real", "None", "Prime", "Contraband"}, ei)
+    if ep and ep ~= ei then setMapping("spoof", "Effect", ({false, "none", "prime", "contraband"})[ep] or nil) end
+    cy = cy + 36
     for _, badge in ipairs(SPOOF_BADGES) do
         text(badge[2], cx, cy + 8, C.text, 13, 5)
         local now = (values[badge[1]] or ""):lower()
         local idx = (now == "true" and 2) or (now == "false" and 3) or 1
         local pick = segmented(x + w - 260, cy, 240, 30, {"Real", "On", "Off"}, idx)
         if pick and pick ~= idx then setMapping("spoof", badge[1], ({false, "true", "false"})[pick] or nil) end
-        cy = cy + 38
+        cy = cy + 36
     end
 
     cy = cy + 8
@@ -1586,10 +1823,39 @@ local function drawSpoof(x, y, w, h)
     if button(x + w - 200, by, 180, 30, "Turn it all off") then
         for _, f in ipairs(SPOOF_FIELDS) do setMapping("spoof", f.key, nil); state.inputs["spoof_" .. f.key] = "" end
         for _, b in ipairs(SPOOF_BADGES) do setMapping("spoof", b[1], nil) end
+        setMapping("spoof", "Effect", nil)
         setMapping("spoof", "Device", nil)
     end
 end
 
+-- Misc: smaller features, each a tab of its own under this one.
+local function drawMisc(x, y, w, h)
+    local at = state.miscTab or 1
+    local pick = segmented(x, y, 360, 30, {"Tracers", "Hands", "Spoof"}, at)
+    if pick and pick ~= at then state.miscTab, at, focus = pick, pick, nil end
+    if at == 1 then drawTracers(x, y + 38, w, h - 38)
+    elseif at == 2 then drawHands(x, y + 38, w, h - 38)
+    else drawSpoof(x, y + 38, w, h - 38) end
+end
+
+-- Support ID: a short number for this PC, made here from Matcha's hardware ID
+-- and scrambled so it can't be turned back into it. Nothing is sent anywhere;
+-- it is printed so a log or screenshot says which copy it came from, and the
+-- changer refuses to run for IDs listed in the repo's blacklist.txt.
+local function supportId()
+    local ok, hw = pcall(function() return gethwid() end)
+    if not ok or type(hw) ~= "string" or hw == "" then return nil end
+    local s = "rsc:" .. hw
+    local h1, h2 = 7, 11
+    for _ = 1, 3 do
+        for i = 1, #s do
+            local c = s:byte(i)
+            h1 = (h1 * 131 + c + h2 % 251) % 999983
+            h2 = (h2 * 65599 + c * 7 + i + h1 % 509) % 1000003
+        end
+    end
+    return string.format("%04d-%04d", h1 % 10000, h2 % 10000)
+end
 local function drawSettings(x, y, w, h)
     rect(x, y, w, h, C.panel, 2, 8)
     local cx, cy = x + 20, y + 18
@@ -1597,18 +1863,18 @@ local function drawSettings(x, y, w, h)
     text("Applies your saved config by itself once per server.", cx, cy + 26, C.faint, 12, 5)
     local a = segmented(x + w - 200, cy, 180, 30, {"Off", "On"}, state.autoApply and 2 or 1)
     if a then state.autoApply = a == 2; saveSettings() end
-    cy = cy + 58
+    cy = cy + 50
     text("Mouse offset", cx, cy + 6, C.text, 14, 5, true)
     text("If the dot isn't on your cursor, move it until it is: " .. state.mouseOffset .. " px",
         cx, cy + 26, C.faint, 12, 5)
     if button(x + w - 200, cy, 84, 30, "Up") then state.mouseOffset = state.mouseOffset - 2; saveSettings() end
     if button(x + w - 104, cy, 84, 30, "Down") then state.mouseOffset = state.mouseOffset + 2; saveSettings() end
-    cy = cy + 58
+    cy = cy + 50
     text("Reload", cx, cy + 6, C.text, 14, 5, true)
     text("After editing the config elsewhere, or when the site gets new skins.", cx, cy + 26, C.faint, 12, 5)
     if button(x + w - 200, cy, 84, 30, "Lists") then job("Reading lists...", loadCatalog) end
     if button(x + w - 104, cy, 84, 30, "Config") then job("Reading config...", loadConfig) end
-    cy = cy + 58
+    cy = cy + 50
     text("Accent color", cx, cy + 6, C.text, 14, 5, true)
     text("Buttons, highlights and the picked tile.", cx, cy + 26, C.faint, 12, 5)
     for i, hex in ipairs(ACCENTS) do
@@ -1619,7 +1885,7 @@ local function drawSettings(x, y, w, h)
         if hex == state.accent then circle(sx, sy, 14, C.text, 5, false, 2) end
         if clicked(sx - 14, sy - 14, 28, 28) then state.accent = hex; applyAccent(hex); saveSettings() end
     end
-    cy = cy + 58
+    cy = cy + 50
     text("Show / hide key", cx, cy + 6, C.text, 14, 5, true)
     text(state.binding and "Press the key to use. Esc cancels." or "Click, then press the key that shows and hides this window.",
         cx, cy + 26, C.faint, 12, 5)
@@ -1632,11 +1898,22 @@ local function drawSettings(x, y, w, h)
             if okDown and down then state.bindHeld[vk] = true end
         end
     end
-    cy = cy + 58
+    cy = cy + 50
+    text("Lists", cx, cy + 6, C.text, 14, 5, true)
+    text(inventory and "The \"you own\" lists show only what you own, or everything."
+        or "Your inventory couldn't be read - the lists show everything. Try Reload > Lists in a match.", cx, cy + 26, C.faint, 12, 5)
+    local o = segmented(x + w - 200, cy, 180, 30, {"Everything", "Owned"}, state.ownedOnly and 2 or 1)
+    if o then state.ownedOnly = o == 2; saveSettings() end
+    cy = cy + 50
+    text("Window on autoexec", cx, cy + 6, C.text, 14, 5, true)
+    text("Hidden: it loads quietly and " .. keyName(state.toggleKey) .. " opens it.", cx, cy + 26, C.faint, 12, 5)
+    local v = segmented(x + w - 200, cy, 180, 30, {"Hidden", "Shown"}, state.showOnAutoexec and 2 or 1)
+    if v then state.showOnAutoexec = v == 2; saveSettings() end
+    cy = cy + 50
     text("Unload", cx, cy + 6, C.text, 14, 5, true)
     text("Removes this window until the script runs again.", cx, cy + 26, C.faint, 12, 5)
     if button(x + w - 200, cy, 180, 30, "Unload") then state.unload = true end
-    cy = cy + 70
+    cy = cy + 58
     line(cx, cy, x + w - 20, cy, C.line, 3, 1)
     text("Skin changer by Martini", cx, cy + 14, C.dim, 13, 5, true)
     text("mr.vage - Main Contributor for the GUI", cx, cy + 36, C.dim, 12, 5)
@@ -1645,14 +1922,16 @@ local function drawSettings(x, y, w, h)
     local rx2 = x + math.floor(w / 2)
     text("Main testers/supporters: choperr0333 aka @Giounis", rx2, cy + 16, C.faint, 12, 5)
     text("Site: " .. SITE, rx2, cy + 36, C.faint, 12, 5)
+    state.supportId = state.supportId or supportId() or "unavailable"
+    text("Support ID: " .. state.supportId, rx2, cy + 76, C.dim, 12, 5)
     text("Gain's Discord: https://discord.gg/RHbxDSe8Z", rx2, cy + 56, C.faint, 12, 5)
 end
 
 -- The window
 
-local TABS = {"Skins", "Cosmetics", "Visuals", "Tracers", "Sounds", "Spoof", "Settings"}
-local DRAW = {Skins = drawSkins, Cosmetics = drawCosmetics, Visuals = drawVisuals, Tracers = drawTracers, Sounds = drawSounds,
-    Spoof = drawSpoof, Settings = drawSettings}
+local TABS = {"Skins", "Cosmetics", "Visuals", "Misc", "Sounds", "Settings"}
+local DRAW = {Skins = drawSkins, Cosmetics = drawCosmetics, Visuals = drawVisuals, Misc = drawMisc, Sounds = drawSounds,
+    Settings = drawSettings}
 local function viewport()
     local ok, vp = pcall(function() return workspace.CurrentCamera.ViewportSize end)
     return ok and vp or V2(1920, 1080)
@@ -1664,6 +1943,61 @@ do
     win.y = math.floor(math.max(40, (vp.Y - win.h) / 2))
 end
 local grabbed, lastInputGrab = nil, nil
+
+-- The first-run notice: it has to be read before anything else shows, and its
+-- button unlocks after a few seconds. Seen once, it is remembered in the
+-- settings file (shared by both GUIs).
+local NOTICE_SECONDS = 10
+local NOTICE = {
+    "All of the functions of the script are undetected. The only detectable way is to enable Device Spoof, "
+        .. "but the chances of a ban by using it are extremely unlikely.",
+    "You can swap between your own skins. Example: you own Event Horizon and set Event Horizon > Keyper. "
+        .. "If you equip Event Horizon, it will show Keyper.",
+    "Demanding questions about the mentioned stuff in this notice will get you blacklisted.",
+    "The script gives this PC a support ID, made on your PC from Matcha's hardware ID and scrambled. "
+        .. "It is not sent anywhere: it shows in the console, and a blacklisted ID can't run the script.",
+}
+local noticeLines, noticeWidth
+local function drawNotice(x, y, w, h)
+    state.noticeStart = state.noticeStart or tick()
+    local left = math.ceil(NOTICE_SECONDS - (tick() - state.noticeStart))
+    local px, pw = x + 70, w - 140
+    -- Wrapped once per width: measuring text every frame is slow.
+    if noticeWidth ~= pw then
+        noticeLines, noticeWidth = {}, pw
+        for _, para in ipairs(NOTICE) do
+            local line = ""
+            for word in para:gmatch("%S+") do
+                local try = line == "" and word or (line .. " " .. word)
+                if line ~= "" and textWidth(try, 14) > pw then
+                    noticeLines[#noticeLines + 1] = line
+                    line = word
+                else
+                    line = try
+                end
+            end
+            if line ~= "" then noticeLines[#noticeLines + 1] = line end
+            noticeLines[#noticeLines + 1] = ""
+        end
+    end
+    local cy = y + 36
+    -- A red title with a soft glow behind it (the same text, larger and faint).
+    local red = RGB(255, 45, 60)
+    rect(x + w / 2 - 90, cy - 6, 180, 38, red, 3, 19, 0.12)
+    rect(x + w / 2 - 74, cy - 2, 148, 30, red, 3, 15, 0.16)
+    text("NOTICE!", x + w / 2, cy, red, 22, 5, true, true)
+    cy = cy + 52
+    for _, l in ipairs(noticeLines) do
+        if l ~= "" then text(l, px, cy, RGB(255, 194, 51), 14, 5) end
+        cy = cy + (l == "" and 12 or 22)
+    end
+    local bw, ready = 280, left <= 0
+    local by = math.max(cy + 16, y + h - 84)
+    if button(x + (w - bw) / 2, by, bw, 38, ready and "I've read and accept" or ("I've read and accept  (" .. left .. ")"), ready, not ready) then
+        state.noticeSeen = true
+        saveSettings()
+    end
+end
 
 local function drawWindow(slide)
     local vp = viewport()
@@ -1687,6 +2021,12 @@ local function drawWindow(slide)
     text("Skin Changer", x + 16 + textWidth("Rivals ", 16, true), y + 12, C.accent, 16, 5, true)
     if button(x + w - 36, y + 8, 26, 24, "x") then state.open = false end
     line(x, y + 40, x + w, y + 40, C.line, 2, 1)
+
+    if not state.noticeSeen then
+        drawNotice(x, y + 40, w, h - 40)
+        circle(M.x, M.y, 2, C.accent, 9, true)
+        return over(x, y, w, h)
+    end
 
     -- Tabs
     local tw = (w - 24) / #TABS
@@ -1827,6 +2167,15 @@ end
 
 pcall(loadConfig)
 pcall(loadSettings)
+-- Started by autoexec, the window stays hidden until its key is pressed
+-- (Settings > Window on autoexec).
+local startedHidden = false
+if _G.__RivalsGuiFromAutoexec then
+    _G.__RivalsGuiFromAutoexec = nil
+    if not state.showOnAutoexec then state.open, startedHidden = false, true end
+end
+-- The notice is shown straight away the first time, however it was started.
+if not state.noticeSeen then state.open, startedHidden = true, false end
 task.spawn(function()
     local ok, err = pcall(loadCatalog)
     if not ok then state.status = "Lists failed: " .. tostring(err):sub(1, 80) end
@@ -1850,5 +2199,8 @@ task.spawn(function()
     stop()
 end)
 autoApplyOnJoin()
+if startedHidden and type(notify) == "function" then
+    pcall(notify, "Rivals Skin Changer", "Loaded - " .. keyName(state.toggleKey) .. " opens the window.", 5)
+end
 print("[Rivals GUI] Drawn window ready - " .. keyName(state.toggleKey) .. " shows and hides it."
     .. (state.autoApply and " Auto-apply is on." or ""))

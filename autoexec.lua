@@ -1,10 +1,10 @@
 -- Rivals changer - autoexec entry point.
 --
--- This loads the GUI only: a window drawn on screen (Right Shift shows and
--- hides it, unless you changed the key in its Settings). It applies your saved
--- config by itself once Rivals has loaded (Auto-apply on join), and stays
--- there, so you can change a skin mid-game and press Save & Apply without
--- rejoining.
+-- This loads the GUI only: a window drawn on screen. It starts hidden; Right
+-- Shift shows and hides it (the key and the hiding are in its Settings). It
+-- applies your saved config by itself once Rivals has loaded (Auto-apply on
+-- join), and stays there, so you can change a skin mid-game and press Save &
+-- Apply without rejoining.
 --
 -- Do not also put the changer (RivalsSkinSwapper.lua) in this folder: it would
 -- run a second time and the second run is refused by its own lock.
@@ -60,6 +60,9 @@ task.spawn(function()
         warn("[Rivals GUI] Could not compile the GUI: " .. tostring(err))
         return
     end
+    -- Tells the GUI autoexec started it, so its window stays hidden until its
+    -- key is pressed (Settings > Window on autoexec changes that).
+    _G.__RivalsGuiFromAutoexec = true
     local okRun, runErr = pcall(fn)
     if not okRun then
         warn("[Rivals GUI] " .. tostring(runErr))
