@@ -457,16 +457,32 @@ do
     local function rd(a) local ok, v = pcall(mrd, "uintptr_t", a) return ok and v or nil end
     local function rint(a) local ok, v = pcall(mrd, "int", a) return ok and v or nil end
     local function rbyte(a) local ok, v = pcall(mrd, "byte", a) return ok and v or nil end
-    -- Roblox build 02c37bc (Sep 30 2026): an object's type is byte 1 of its
-    -- header, a table's lsizenode byte 4, and a thread's global state +0x68.
+    -- Roblox moves Luau's layout between builds: the header byte with an
+    -- object's type (+1 in build 02c37bc, +0 in cec3ad5), the one with a
+    -- table's lsizenode, and the thread's global state. The changer finds
+    -- them and shares them as _G.__RSC_LAYOUT; until it has, this checks
+    -- the thread's header and the known global-state offsets itself.
     local TAG_TABLE, TAG_THREAD = 7, 10
-    local function isTable(t) return t and t > 0x10000 and rbyte(t + 1) == TAG_TABLE end
+    local L = {tt = 1, lsize = 4}
+    local function isTable(t) return t and t > 0x10000 and rbyte(t + L.tt) == TAG_TABLE end
     local function moduleTable(ms)
         local thread = ms and ms.Address and rd(ms.Address + 0x170)
-        if not thread or thread < 0x10000 or rbyte(thread + 1) ~= TAG_THREAD then return nil end
-        local g = rd(thread + 0x68)
-        local reg = g and g > 0x10000 and rd(g + 0x620)
-        if not isTable(reg) then return nil end
+        if not thread or thread < 0x10000 then return nil end
+        local shared = _G.__RSC_LAYOUT
+        if shared then L.tt, L.lsize = shared.tt, shared.lsize end
+        if rbyte(thread + L.tt) ~= TAG_THREAD then
+            for b = 0, 3 do
+                if rbyte(thread + b) == TAG_THREAD then L.tt, L.lsize = b, (b == 0 and 6 or 4) break end
+            end
+        end
+        if rbyte(thread + L.tt) ~= TAG_THREAD then return nil end
+        local reg
+        for _, x in ipairs({shared and shared.globalState or 0x68, 0x68, 0x18}) do
+            local g = rd(thread + x)
+            local r = g and g > 0x10000 and rd(g + (shared and shared.registry or 0x620))
+            if isTable(r) then reg = r break end
+        end
+        if not reg then return nil end
         local slot, size, arr = rint(ms.Address + 0x178), rint(reg + 8), rd(reg + 0x20)
         if not slot or not size or not arr or slot < 1 or slot > size then return nil end
         local t = rd(arr + (slot - 1) * 16)
@@ -476,7 +492,7 @@ do
     local function fields(t)
         local out = {}
         if not isTable(t) then return out end
-        local base, l = rd(t + 0x18), rbyte(t + 4)
+        local base, l = rd(t + 0x18), rbyte(t + L.lsize)
         if not base or base < 0x10000 or not l or l > 16 then return out end
         for i = 0, 2 ^ l - 1 do
             local node = base + i * 32
@@ -724,13 +740,13 @@ local function equipSoundStrings()
     local modules = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
     local ms = modules and modules:FindFirstChild("SoundLibrary")
     local thread = ms and rdq(ms.Address + 0x170)
-    local g = thread and rdq(thread + 0x68)
-    local reg = g and rdq(g + 0x620)
+    local g = thread and rdq(thread + ((_G.__RSC_LAYOUT or {}).globalState or 0x68))
+    local reg = g and rdq(g + ((_G.__RSC_LAYOUT or {}).registry or 0x620))
     local slot, arr = ms and rdi(ms.Address + 0x178), reg and rdq(reg + 0x20)
     local t = arr and slot and slot > 0 and rdq(arr + (slot - 1) * 16)
     if not t then return {} end
     local base = rdq(t + 0x18)
-    local okL, l = pcall(memory_read, "byte", t + 4)
+    local okL, l = pcall(memory_read, "byte", t + ((_G.__RSC_LAYOUT or {}).lsize or 4))
     if not base or not okL or l > 12 then return {} end
     for i = 0, 2 ^ l - 1 do
         local node = base + i * 32
