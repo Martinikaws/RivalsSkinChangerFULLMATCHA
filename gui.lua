@@ -66,15 +66,11 @@ local function numbered(prefix, from, to)
     for n = from, to do out[#out + 1] = string.format("%s %02d", prefix, n) end
     return out
 end
+-- Community skies are off: their images are private uploads that Rivals
+-- isn't allowed to load, and since Roblox build cec3ad5 (Oct 2026) that
+-- crashes the game. Only skies with public images (the game's own) remain.
 local SKY_GROUPS = {
     {name = "Game skies", skies = {"blue", "space", "graveyard", "sudden death", "station", "westown", "black", "gray", "classic"}},
-    {name = "Cloudy", skies = numbered("cloudy", 1, 25)},
-    {name = "Space", skies = {"galaxy", "blue nebula", "gold nebula"}},
-    {name = "More A-D", skies = {"aurora", "beautiful", "black hole", "blue sky", "broken sky", "castle grounds", "chill gray", "chill pink", "chroma key", "clear skies", "cyan", "dead star forest", "disaster"}},
-    {name = "More E-M", skies = {"elegant morning", "emo", "fade blue", "forest", "goodnight", "grimnight", "hades", "hazy", "jungle", "light blue", "light pink", "minecraft", "minecraft end"}},
-    {name = "More M-P", skies = {"moonlight", "neon sky", "neon sky 2", "nibiru", "night", "night sky moon", "northern lights", "oblivion", "orange", "overcast", "pandora", "peaceful morning", "pink sunrise"}},
-    {name = "More P-S", skies = {"pumpkin hill", "purple nebula", "red", "setting sun", "sfoth", "shiverfrost", "sky 05", "sky 13", "sky 2006", "sky 22", "sky 31", "sky 38", "sky 47"}},
-    {name = "More S-Z", skies = {"sky purple", "sky sunset", "space blue", "spooky", "sunny sky", "universe", "utter east", "whomp fortress", "winterness", "xen", "zen end"}},
 }
 -- Front faces of the game's own skies; the uploaded ones come from skyboxes.json.
 local SKY_FACES = {
