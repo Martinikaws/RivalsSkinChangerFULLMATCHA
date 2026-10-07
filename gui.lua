@@ -463,27 +463,27 @@ do
     -- them and shares them as _G.__RSC_LAYOUT; until it has, this checks
     -- the thread's header and the known global-state offsets itself.
     local TAG_TABLE, TAG_THREAD = 7, 10
-    local L = {tt = 1, lsize = 4}
+    -- Known builds: 02c37bc (type byte +1) and cec3ad5 (type byte +0).
+    local KNOWN = {[1] = {tt = 1, globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18},
+        [0] = {tt = 0, globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}}
+    local L = KNOWN[1]
     local function isTable(t) return t and t > 0x10000 and rbyte(t + L.tt) == TAG_TABLE end
     local function moduleTable(ms)
         local thread = ms and ms.Address and rd(ms.Address + 0x170)
         if not thread or thread < 0x10000 then return nil end
         local shared = _G.__RSC_LAYOUT
-        if shared then L.tt, L.lsize = shared.tt, shared.lsize end
-        if rbyte(thread + L.tt) ~= TAG_THREAD then
+        if shared and shared.array then
+            L = shared
+        elseif rbyte(thread + L.tt) ~= TAG_THREAD then
             for b = 0, 3 do
-                if rbyte(thread + b) == TAG_THREAD then L.tt, L.lsize = b, (b == 0 and 6 or 4) break end
+                if rbyte(thread + b) == TAG_THREAD and KNOWN[b] then L = KNOWN[b] break end
             end
         end
         if rbyte(thread + L.tt) ~= TAG_THREAD then return nil end
-        local reg
-        for _, x in ipairs({shared and shared.globalState or 0x68, 0x68, 0x18}) do
-            local g = rd(thread + x)
-            local r = g and g > 0x10000 and rd(g + (shared and shared.registry or 0x620))
-            if isTable(r) then reg = r break end
-        end
-        if not reg then return nil end
-        local slot, size, arr = rint(ms.Address + 0x178), rint(reg + 8), rd(reg + 0x20)
+        local g = rd(thread + L.globalState)
+        local reg = g and g > 0x10000 and rd(g + L.registry)
+        if not isTable(reg) then return nil end
+        local slot, size, arr = rint(ms.Address + 0x178), rint(reg + L.sizearray), rd(reg + L.array)
         if not slot or not size or not arr or slot < 1 or slot > size then return nil end
         local t = rd(arr + (slot - 1) * 16)
         return isTable(t) and t or nil
@@ -492,7 +492,7 @@ do
     local function fields(t)
         local out = {}
         if not isTable(t) then return out end
-        local base, l = rd(t + 0x18), rbyte(t + L.lsize)
+        local base, l = rd(t + L.node), rbyte(t + L.lsize)
         if not base or base < 0x10000 or not l or l > 16 then return out end
         for i = 0, 2 ^ l - 1 do
             local node = base + i * 32
@@ -740,20 +740,28 @@ local function equipSoundStrings()
     local modules = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
     local ms = modules and modules:FindFirstChild("SoundLibrary")
     local thread = ms and rdq(ms.Address + 0x170)
-    local g = thread and rdq(thread + ((_G.__RSC_LAYOUT or {}).globalState or 0x68))
-    local reg = g and rdq(g + ((_G.__RSC_LAYOUT or {}).registry or 0x620))
-    local slot, arr = ms and rdi(ms.Address + 0x178), reg and rdq(reg + 0x20)
+    -- The layout the changer found; without it, one of the two known builds,
+    -- told apart by where the thread's type byte (10) sits.
+    local lay = _G.__RSC_LAYOUT
+    if not lay or not lay.array then
+        local okB, b0 = pcall(memory_read, "byte", thread or 0)
+        lay = (okB and b0 == 10) and {globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}
+            or {globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18}
+    end
+    local g = thread and rdq(thread + lay.globalState)
+    local reg = g and rdq(g + lay.registry)
+    local slot, arr = ms and rdi(ms.Address + 0x178), reg and rdq(reg + lay.array)
     local t = arr and slot and slot > 0 and rdq(arr + (slot - 1) * 16)
     if not t then return {} end
-    local base = rdq(t + 0x18)
-    local okL, l = pcall(memory_read, "byte", t + ((_G.__RSC_LAYOUT or {}).lsize or 4))
+    local base = rdq(t + lay.node)
+    local okL, l = pcall(memory_read, "byte", t + lay.lsize)
     if not base or not okL or l > 12 then return {} end
     for i = 0, 2 ^ l - 1 do
         local node = base + i * 32
         local key = rdq(node + 16)
         if key and readLuaString(key) == "EquipSounds" then
             local list = rdq(node)
-            local size, items = list and rdi(list + 8), list and rdq(list + 0x20)
+            local size, items = list and rdi(list + lay.sizearray), list and rdq(list + lay.array)
             local out = {}
             for j = 0, (size or 0) - 1 do
                 local ts = rdq(items + j * 16)
