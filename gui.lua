@@ -448,32 +448,112 @@ end
 -- item libraries. nil when it can't be read; the lists then show everything.
 local inventory = nil
 local readInventory
+local detectLayout
 do
     local mrd = memory_read
     local function rd(a) local ok, v = pcall(mrd, "uintptr_t", a) return ok and v or nil end
     local function rint(a) local ok, v = pcall(mrd, "int", a) return ok and v or nil end
     local function rbyte(a) local ok, v = pcall(mrd, "byte", a) return ok and v or nil end
-    -- Roblox moves Luau's layout between builds: the header byte with an
-    -- object's type (+1 in build 02c37bc, +0 in cec3ad5), the one with a
-    -- table's lsizenode, and the thread's global state. The changer finds
-    -- them and shares them as _G.__RSC_LAYOUT; until it has, this checks
-    -- the thread's header and the known global-state offsets itself.
+    -- Finds tt, globalState, registry, lsizenode, array and node pointers
+    -- dynamically at runtime across Roblox updates, falling back to known builds.
     local TAG_TABLE, TAG_THREAD = 7, 10
     -- Known builds: 02c37bc (type byte +1) and cec3ad5 (type byte +0).
     local KNOWN = {[1] = {tt = 1, globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18},
         [0] = {tt = 0, globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}}
     local L = KNOWN[1]
     local function isTable(t) return t and t > 0x10000 and rbyte(t + L.tt) == TAG_TABLE end
+
+    detectLayout = function(ms)
+        if _G.__RSC_LAYOUT and _G.__RSC_LAYOUT.array then return _G.__RSC_LAYOUT end
+        local thread = ms and ms.Address and rd(ms.Address + 0x170)
+        local slot = ms and ms.Address and rint(ms.Address + 0x178)
+        if not thread or thread < 0x10000 or not slot or slot < 1 then return nil end
+        local tt
+        for b = 0, 3 do if rbyte(thread + b) == TAG_THREAD then tt = b break end end
+        if not tt then return nil end
+
+        local function arrayOf(reg)
+            for _, so in ipairs({8, 12, 4}) do
+                local size = rint(reg + so)
+                if size and size >= slot and size < 10000000 then
+                    for _, ao in ipairs({0x20, 0x18, 0x28, 0x10}) do
+                        local arr = rd(reg + ao)
+                        if arr and arr > 0x10000 and arr < 0x7fffffffffff and rint(arr + (slot - 1) * 16 + 12) == TAG_TABLE then
+                            local t = rd(arr + (slot - 1) * 16)
+                            if t and t > 0x10000 and rbyte(t + tt) == TAG_TABLE then return t, so, ao end
+                        end
+                    end
+                end
+            end
+        end
+
+        local function nodesOfTable(t)
+            for _, no in ipairs({0x18, 0x20, 0x10, 0x28}) do
+                local base = rd(t + no)
+                if base and base > 0x10000 and base < 0x7fffffffffff then
+                    for _, b in ipairs({tt == 0 and 6 or 4, 4, 6, 5, 7, 3, 2}) do
+                        local l, m = rbyte(t + b), rbyte(t + b + 1)
+                        if l and m and l >= 1 and l <= 24 and m == (2 ^ l - 1) % 256 then
+                            local keys = 0
+                            for i = 0, math.min(2 ^ l, 64) - 1 do
+                                local n = base + i * 32
+                                local kp = rd(n + 16)
+                                if (rint(n + 28) or 0) % 16 == 6 and kp and kp > 0x10000 then
+                                    local ok, k = pcall(mrd, "string", kp + 24)
+                                    if ok and type(k) == "string" and #k > 0 and #k < 64 then keys = keys + 1 end
+                                end
+                            end
+                            if keys > 0 then return no, b end
+                        end
+                    end
+                end
+            end
+        end
+
+        local function tryAt(g, x, y)
+            local reg = rd(g + y)
+            if not reg or reg < 0x10000 or rint(g + y + 12) ~= TAG_TABLE or rbyte(reg + tt) ~= TAG_TABLE then return nil end
+            local t, so, ao = arrayOf(reg)
+            if not t then return nil end
+            local no, lsize = nodesOfTable(t)
+            if not no then return nil end
+            local res = {tt = tt, globalState = x, registry = y, lsize = lsize, sizearray = so, array = ao, node = no}
+            _G.__RSC_LAYOUT = res
+            return res
+        end
+
+        local xs = {0x18, 0x68}
+        for x = 0, 0x100, 8 do xs[#xs + 1] = x end
+        for _, x in ipairs(xs) do
+            local g = rd(thread + x)
+            if g and g > 0x10000 and g < 0x7fffffffffff then
+                local res = tryAt(g, x, 0x620)
+                if res then return res end
+            end
+        end
+        for _, x in ipairs(xs) do
+            local g = rd(thread + x)
+            if g and g > 0x10000 and g < 0x7fffffffffff then
+                for y = 0, 0x1000, 8 do
+                    local res = tryAt(g, x, y)
+                    if res then return res end
+                end
+            end
+        end
+        local fb = KNOWN[tt] or KNOWN[1]
+        _G.__RSC_LAYOUT = fb
+        return fb
+    end
+
     local function moduleTable(ms)
         local thread = ms and ms.Address and rd(ms.Address + 0x170)
         if not thread or thread < 0x10000 then return nil end
         local shared = _G.__RSC_LAYOUT
         if shared and shared.array then
             L = shared
-        elseif rbyte(thread + L.tt) ~= TAG_THREAD then
-            for b = 0, 3 do
-                if rbyte(thread + b) == TAG_THREAD and KNOWN[b] then L = KNOWN[b] break end
-            end
+        else
+            local detected = detectLayout(ms)
+            if detected then L = detected end
         end
         if rbyte(thread + L.tt) ~= TAG_THREAD then return nil end
         local g = rd(thread + L.globalState)
@@ -737,8 +817,10 @@ local function equipSoundStrings()
     local ms = modules and modules:FindFirstChild("SoundLibrary")
     local thread = ms and rdq(ms.Address + 0x170)
     -- The layout the changer found; without it, one of the two known builds,
-    -- told apart by where the thread's type byte (10) sits.
     local lay = _G.__RSC_LAYOUT
+    if not lay or not lay.array then
+        if detectLayout and ms then lay = detectLayout(ms) end
+    end
     if not lay or not lay.array then
         local okB, b0 = pcall(memory_read, "byte", thread or 0)
         lay = (okB and b0 == 10) and {globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}
