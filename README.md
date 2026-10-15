@@ -51,9 +51,9 @@ starts twice; the second start is refused by its own lock.
     weapon.
 - **Cosmetics** - wraps, finishers and charms: the one you own looks like
   another. Season charms also ask which rank, from Unranked to Archnemesis.
-- **Visuals** - the game's own skyboxes and lighting: normal, dark, or
-  matched to the sky. (Uploaded skies crash the game since Roblox build
-  cec3ad5, so they're off; see the site-based repo's README.)
+- **Visuals** - every skybox (the game's own and the uploaded ones) and
+  lighting: normal, dark, or matched to the sky. If an uploaded sky crashes
+  the game, see Skyboxes in the site-based repo's README.
 - **Sounds** - hit, headshot and kill sounds, from a library or any audio id,
   with a preview.
 

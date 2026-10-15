@@ -66,13 +66,17 @@ local function numbered(prefix, from, to)
     for n = from, to do out[#out + 1] = string.format("%s %02d", prefix, n) end
     return out
 end
--- Only the game's own skies: since Roblox build cec3ad5 (Oct 2026) the
--- uploaded skies crash the game on the next map load, so the changer turns
--- down any sky image the game's own skies don't use (Force=yes overrides).
 local SKY_GROUPS = {
     {name = "Game skies", skies = {"blue", "space", "graveyard", "sudden death", "station", "westown", "black", "gray", "classic"}},
+    {name = "Cloudy", skies = numbered("cloudy", 1, 25)},
+    {name = "Space", skies = {"galaxy", "blue nebula", "gold nebula"}},
+    {name = "More A-D", skies = {"aurora", "beautiful", "black hole", "blue sky", "broken sky", "castle grounds", "chill gray", "chill pink", "chroma key", "clear skies", "cyan", "dead star forest", "disaster"}},
+    {name = "More E-M", skies = {"elegant morning", "emo", "fade blue", "forest", "goodnight", "grimnight", "hades", "hazy", "jungle", "light blue", "light pink", "minecraft", "minecraft end"}},
+    {name = "More M-P", skies = {"moonlight", "neon sky", "neon sky 2", "nibiru", "night", "night sky moon", "northern lights", "oblivion", "orange", "overcast", "pandora", "peaceful morning", "pink sunrise"}},
+    {name = "More P-S", skies = {"pumpkin hill", "purple nebula", "red", "setting sun", "sfoth", "shiverfrost", "sky 05", "sky 13", "sky 2006", "sky 22", "sky 31", "sky 38", "sky 47"}},
+    {name = "More S-Z", skies = {"sky purple", "sky sunset", "space blue", "spooky", "sunny sky", "universe", "utter east", "whomp fortress", "winterness", "xen", "zen end"}},
 }
--- Front faces of the game's own skies (skyboxes.json adds the uploaded ones).
+-- Front faces of the game's own skies; the uploaded ones come from skyboxes.json.
 local SKY_FACES = {
     blue = "14147882761", space = "10196550367", graveyard = "135908632589654",
     ["sudden death"] = "84214501374682", station = "2108482231", westown = "12261809766",
@@ -1633,7 +1637,7 @@ local function drawCosmetics(x, y, w, h)
 end
 
 -- Every sky in one grid (the groups only existed because Matcha's own menu
--- couldn't scroll a dropdown), after "Off".
+-- couldn't scroll a dropdown): the game's skies first, then the uploaded ones.
 local function drawVisuals(x, y, w, h)
     local skyNow = ((state.values.skybox or {}).Preset or ""):lower()
     local rx, rw = x, w
