@@ -66,13 +66,13 @@ local function numbered(prefix, from, to)
     for n = from, to do out[#out + 1] = string.format("%s %02d", prefix, n) end
     return out
 end
--- Community skies are off: their images are private uploads that Rivals
--- isn't allowed to load, and since Roblox build cec3ad5 (Oct 2026) that
--- crashes the game. Only skies with public images (the game's own) remain.
+-- Only the game's own skies: since Roblox build cec3ad5 (Oct 2026) the
+-- uploaded skies crash the game on the next map load, so the changer turns
+-- down any sky image the game's own skies don't use (Force=yes overrides).
 local SKY_GROUPS = {
     {name = "Game skies", skies = {"blue", "space", "graveyard", "sudden death", "station", "westown", "black", "gray", "classic"}},
 }
--- Front faces of the game's own skies; the uploaded ones come from skyboxes.json.
+-- Front faces of the game's own skies (skyboxes.json adds the uploaded ones).
 local SKY_FACES = {
     blue = "14147882761", space = "10196550367", graveyard = "135908632589654",
     ["sudden death"] = "84214501374682", station = "2108482231", westown = "12261809766",
@@ -1633,7 +1633,7 @@ local function drawCosmetics(x, y, w, h)
 end
 
 -- Every sky in one grid (the groups only existed because Matcha's own menu
--- couldn't scroll a dropdown): the game's skies first, then the uploaded ones.
+-- couldn't scroll a dropdown), after "Off".
 local function drawVisuals(x, y, w, h)
     local skyNow = ((state.values.skybox or {}).Preset or ""):lower()
     local rx, rw = x, w
