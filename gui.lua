@@ -67,7 +67,7 @@ local function numbered(prefix, from, to)
     return out
 end
 local SKY_GROUPS = {
-    {name = "Game skies", skies = {"blue", "space", "graveyard", "sudden death", "station", "westown", "black", "gray", "classic"}},
+    {name = "Game skies", skies = {"blue", "space", "graveyard", "sudden death", "station", "westown", "black", "gray"}},
     {name = "Cloudy", skies = numbered("cloudy", 1, 25)},
     {name = "Space", skies = {"galaxy", "blue nebula", "gold nebula"}},
     {name = "More A-D", skies = {"aurora", "beautiful", "black hole", "blue sky", "broken sky", "castle grounds", "chill gray", "chill pink", "chroma key", "clear skies", "cyan", "dead star forest", "disaster"}},
@@ -1661,7 +1661,7 @@ local function drawVisuals(x, y, w, h)
                 local face = catalog.skyFaces[s]
                 items[#items + 1] = {name = s, src = face and ("assets/images/skies/" .. face .. ".png") or nil,
                     colors = (s == "gray" and {RGB(128, 128, 128)}) or (s == "black" and {RGB(8, 8, 10)})
-                        or (s == "classic" and {RGB(116, 160, 214), RGB(186, 208, 236)}) or nil}
+                        or nil}
             end
         end
     end
