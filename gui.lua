@@ -1948,14 +1948,168 @@ local function drawSpoof(x, y, w, h)
     end
 end
 
+-- Health bar: your own bar in the bottom HUD, saved as the [HealthBar]
+-- section. Only you see it; the game draws it, so it doesn't lag.
+local HP_STYLES = {
+    {"Game's own", nil, "The game's green-to-red bar."},
+    {"Color", "Color", "One colour of your choice."},
+    {"Rainbow", "Rainbow", "The whole bar cycles through the rainbow."},
+    {"Gradient", "Gradient", "Two colours along the bar, scrolling."},
+    {"By health", "Health", "Your colours for full, half and low health."},
+}
+local function drawHealthBar(x, y, w, h)
+    local values = state.values.healthbar or {}
+    local cur = tostring(values.Style or ""):lower()
+    if cur == "cycle" then cur = "gradient" end
+    local styleName = "Game's own"
+    for _, s in ipairs(HP_STYLES) do if s[2] and s[2]:lower() == cur then styleName = s[1] end end
+
+    local lw = 210
+    rect(x, y, lw, h, C.panel, 2, 8)
+    text("STYLE", x + 12, y + 10, C.faint, 11, 5, true)
+    local names = {}
+    for _, s in ipairs(HP_STYLES) do names[#names + 1] = s[1] end
+    local picked = sideList("hpStyles", x + 8, y + 30, lw - 22, h - 38, names, styleName,
+        function(n) return n == styleName and n ~= "Game's own" end)
+    if picked and picked ~= styleName then
+        for _, s in ipairs(HP_STYLES) do if s[1] == picked then setMapping("healthbar", "Style", s[2]) end end
+        styleName = picked
+    end
+
+    local rx, rw = x + lw + 12, w - lw - 12
+    rect(rx, y, rw, h, C.panel, 2, 8)
+    text("Health bar - " .. styleName, rx + 16, y + 14, C.text, 15, 5, true)
+    for _, s in ipairs(HP_STYLES) do if s[1] == styleName then text(s[3], rx + 16, y + 36, C.dim, 12, 5) end end
+
+    local function hexOf(key, fallback)
+        local v = tostring(values[key] or ""):gsub("^#", ""):lower()
+        return v:match("^%x%x%x%x%x%x$") and v or fallback
+    end
+    local speed = state.hpSpeed or tonumber(values.Speed) or 100
+    local c1raw = tostring(values.Color1 or ""):lower()
+
+    -- Preview, drawn the way the changer colours the bar.
+    local px, py, pw, ph = rx + 16, y + 62, rw - 32, 26
+    rect(px - 3, py - 3, pw + 6, ph + 6, RGB(20, 20, 24), 3, 9)
+    local SL = 32
+    local t = tick()
+    local function mixHex(a, b, k)
+        local ca, cb = hexColor(a), hexColor(b)
+        return Color3.new(ca.R + (cb.R - ca.R) * k, ca.G + (cb.G - ca.G) * k, ca.B + (cb.B - ca.B) * k)
+    end
+    for i = 1, SL do
+        local u = (i - 0.5) / SL
+        local col
+        if styleName == "Color" then
+            col = hexColor(hexOf("Color", "9933ff"))
+        elseif styleName == "Rainbow" then
+            col = Color3.fromHSV((t * 0.25 * speed / 100) % 1, 0.8, 1)
+        elseif styleName == "Gradient" then
+            local ph2 = t * 0.4 * speed / 100
+            if c1raw == "rainbow" then
+                col = Color3.fromHSV((u * 0.6 - ph2) % 1, 0.85, 1)
+            else
+                col = mixHex(hexOf("Color1", "ff2bd6"), hexOf("Color2", "3b5bff"), 0.5 - 0.5 * math.cos(2 * math.pi * (u * 0.5 - ph2)))
+            end
+        elseif styleName == "By health" then
+            -- Full on the left down to low on the right.
+            local a = 1 - u
+            local low, mid, full = hexOf("Low", "ff3232"), hexOf("Mid", "ffd700"), hexOf("Full", "64ff32")
+            local m = mixHex(mid, full, a)
+            local l = hexColor(low)
+            col = Color3.new(l.R + (m.R - l.R) * a, l.G + (m.G - l.G) * a, l.B + (m.B - l.B) * a)
+        else
+            col = RGB(100, 255, 50)
+        end
+        rect(px + (i - 1) * pw / SL, py, math.ceil(pw / SL) + 1, ph, col, 4, (i == 1 or i == SL) and 6 or 0)
+    end
+
+    -- A row of colour swatches for one key; the picked one is outlined.
+    local function swatches(label, key, sy, fallback, withRainbow)
+        text(label, rx + 16, sy + 6, C.dim, 13, 5)
+        local list = {}
+        if withRainbow then list[1] = {"Rainbow", "rainbow"} end
+        for _, c in ipairs(TRACER_COLORS) do list[#list + 1] = c end
+        local sx, size = rx + 110, 24
+        local now = tostring(values[key] or ""):gsub("^#", ""):lower()
+        if now == "" then now = fallback end
+        for i, c in ipairs(list) do
+            local bx = sx + (i - 1) * (size + 6)
+            if bx + size > rx + rw - 10 then break end
+            if c[2] == "rainbow" then
+                for k = 0, 3 do rect(bx + k * size / 4, sy, size / 4 + 1, size, Color3.fromHSV(k / 4, 0.8, 1), 4, 0) end
+            else
+                rect(bx, sy, size, size, hexColor(c[2]), 4, 5)
+            end
+            if now == c[2] then border(bx - 2, sy - 2, size + 4, size + 4, C.text, 5, 6) end
+            if clicked(bx, sy, size, size) then setMapping("healthbar", key, c[2]) end
+        end
+    end
+
+    local oy = y + 106
+    if styleName == "Color" then
+        swatches("Colour", "Color", oy, "9933ff")
+    elseif styleName == "Gradient" then
+        swatches("Colour 1", "Color1", oy, "ff2bd6", true)
+        if c1raw ~= "rainbow" then swatches("Colour 2", "Color2", oy + 36, "3b5bff") end
+    elseif styleName == "By health" then
+        swatches("Full", "Full", oy, "64ff32")
+        swatches("Half", "Mid", oy + 36, "ffd700")
+        swatches("Low", "Low", oy + 72, "ff3232")
+    elseif styleName == "Game's own" then
+        text("Pick a style on the left. It shows from the next Save & Apply.", rx + 16, oy + 6, C.faint, 12, 5)
+    end
+
+    -- Speed, for Rainbow and Gradient (0 holds a gradient still). Saved when
+    -- you let go, so dragging doesn't re-apply every frame.
+    if styleName == "Rainbow" or styleName == "Gradient" then
+        local sy = y + h - 84
+        text("Speed", rx + 16, sy + 6, C.dim, 13, 5)
+        local bx, bw = rx + 72, rw - 250
+        local k = math.max(0, math.min(1, speed / 300))
+        rect(bx, sy + 12, bw, 4, C.card, 3, 2)
+        rect(bx, sy + 12, math.max(1, bw * k), 4, C.accent, 4, 2)
+        circle(bx + bw * k, sy + 14, 7, C.text, 5, true)
+        if M.press and over(bx - 8, sy, bw + 16, 28) then state.hpDrag = true end
+        if state.hpDrag then
+            if M.down then
+                speed = math.floor(300 * math.max(0, math.min(1, (M.x - bx) / bw)) / 10 + 0.5) * 10
+                state.hpSpeed = speed
+                M.dragged = true
+            else
+                state.hpDrag, state.hpSpeed = nil, nil
+                setMapping("healthbar", "Speed", speed ~= 100 and tostring(speed) or nil)
+            end
+        end
+        text(speed .. "%" .. (speed == 0 and "  - still" or ""), bx + bw + 16, sy + 6, C.text, 13, 5)
+    end
+
+    -- Any colour by hex, for the key the style uses first.
+    local hexKey = ({Color = "Color", Gradient = "Color1", ["By health"] = "Full"})[styleName]
+    if hexKey then
+        local cy = y + h - 42
+        textbox("hpHex", rx + 12, cy, rw - 270, 30, "Any colour, like ff66cc")
+        local keys = styleName == "Gradient" and {"Color1", "Color2"} or (styleName == "By health" and {"Full", "Mid", "Low"} or {"Color"})
+        local labels = {Color1 = "Colour 1", Color2 = "Colour 2", Full = "Full", Mid = "Half", Low = "Low", Color = "Use colour"}
+        local bw = math.floor(240 / #keys) - 6
+        for i, key in ipairs(keys) do
+            if button(rx + rw - 252 + (i - 1) * (bw + 6), cy, bw, 30, labels[key]) then
+                local v = trim(state.inputs.hpHex or ""):gsub("^#", ""):lower()
+                if v:match("^%x%x%x%x%x%x$") then setMapping("healthbar", key, v) else state.status = "Colours are 6 hex digits, like ff66cc" end
+            end
+        end
+    end
+end
+
 -- Misc: smaller features, each a tab of its own under this one.
 local function drawMisc(x, y, w, h)
     local at = state.miscTab or 1
-    local pick = segmented(x, y, 360, 30, {"Tracers", "Hands", "Spoof"}, at)
+    local pick = segmented(x, y, 480, 30, {"Tracers", "Hands", "Spoof", "Health bar"}, at)
     if pick and pick ~= at then state.miscTab, at, focus = pick, pick, nil end
     if at == 1 then drawTracers(x, y + 38, w, h - 38)
     elseif at == 2 then drawHands(x, y + 38, w, h - 38)
-    else drawSpoof(x, y + 38, w, h - 38) end
+    elseif at == 3 then drawSpoof(x, y + 38, w, h - 38)
+    else drawHealthBar(x, y + 38, w, h - 38) end
 end
 
 -- Support ID: a short number for this PC, made here from Matcha's hardware ID
