@@ -1723,7 +1723,9 @@ local function drawTracers(x, y, w, h)
     text("Now: " .. (current or (key == "Color" and "the game's own" or "same as All guns")), rx + 16, y + 36, C.dim, 12, 5)
 
     local items = {{name = key == "Color" and "Game's own" or "Same as all", none = true},
-        {name = "Rainbow", value = "rainbow", colors = {RGB(255, 60, 60), RGB(60, 120, 255), RGB(255, 230, 0)}}}
+        {name = "Rainbow", value = "rainbow", colors = {RGB(255, 60, 60), RGB(60, 120, 255), RGB(255, 230, 0)}},
+        {name = "Match sky", value = "sky", colors = {RGB(196, 76, 255), RGB(102, 138, 255)}},
+        {name = "Match wrap", value = "wrap", colors = {RGB(255, 160, 44), RGB(230, 230, 230), RGB(40, 40, 40)}}}
     for _, c in ipairs(TRACER_COLORS) do items[#items + 1] = {name = c[1], value = c[2], colors = {hexColor(c[2])}} end
     local gy = y + 62
     local hit = tileGrid("tracerGrid", rx + 12, gy, rw - 30, h - (gy - y) - 132, items, function(it)
@@ -1956,6 +1958,7 @@ local HP_STYLES = {
     {"Rainbow", "Rainbow", "The whole bar cycles through the rainbow."},
     {"Gradient", "Gradient", "Two colours along the bar, scrolling."},
     {"By health", "Health", "Your colours for full, half and low health."},
+    {"Match sky", "Sky", "Your sky preset's colours, scrolling (skies with matching lighting)."},
 }
 local function drawHealthBar(x, y, w, h)
     local values = state.values.healthbar or {}
@@ -2004,9 +2007,11 @@ local function drawHealthBar(x, y, w, h)
             col = hexColor(hexOf("Color", "9933ff"))
         elseif styleName == "Rainbow" then
             col = Color3.fromHSV((t * 0.25 * speed / 100) % 1, 0.8, 1)
-        elseif styleName == "Gradient" then
+        elseif styleName == "Gradient" or styleName == "Match sky" then
             local ph2 = t * 0.4 * speed / 100
-            if c1raw == "rainbow" then
+            if styleName == "Match sky" then
+                col = mixHex("c44cff", "668aff", 0.5 - 0.5 * math.cos(2 * math.pi * (u * 0.5 - ph2)))
+            elseif c1raw == "rainbow" then
                 col = Color3.fromHSV((u * 0.6 - ph2) % 1, 0.85, 1)
             else
                 col = mixHex(hexOf("Color1", "ff2bd6"), hexOf("Color2", "3b5bff"), 0.5 - 0.5 * math.cos(2 * math.pi * (u * 0.5 - ph2)))
@@ -2058,11 +2063,14 @@ local function drawHealthBar(x, y, w, h)
         swatches("Low", "Low", oy + 72, "ff3232")
     elseif styleName == "Game's own" then
         text("Pick a style on the left. It shows from the next Save & Apply.", rx + 16, oy + 6, C.faint, 12, 5)
+    elseif styleName == "Match sky" then
+        local sky = (state.values.skybox or {}).Preset
+        text(sky and ("Colours from your sky: " .. sky) or "Pick a sky preset in the Sky tab first.", rx + 16, oy + 6, C.faint, 12, 5)
     end
 
     -- Speed, for Rainbow and Gradient (0 holds a gradient still). Saved when
     -- you let go, so dragging doesn't re-apply every frame.
-    if styleName == "Rainbow" or styleName == "Gradient" then
+    if styleName == "Rainbow" or styleName == "Gradient" or styleName == "Match sky" then
         local sy = y + h - 84
         text("Speed", rx + 16, sy + 6, C.dim, 13, 5)
         local bx, bw = rx + 72, rw - 250
