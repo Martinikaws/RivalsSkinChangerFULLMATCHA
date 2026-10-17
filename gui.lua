@@ -2109,15 +2109,114 @@ local function drawHealthBar(x, y, w, h)
     end
 end
 
+-- Buttons: the menu's coloured buttons, saved as the [Buttons] section.
+-- Each style takes one colour, two (a gradient), sky or rainbow. They stay
+-- still: Roblox draws a button's gradient once.
+local BTN_STYLES = {
+    {"Green", "Green buttons", "Play, prices and confirm buttons", {"74df32", "c6ff0a"}},
+    {"Blue", "Blue buttons", "View and info buttons", {"0059ff", "00d0ff"}},
+    {"Yellow", "Yellow buttons", "Buy and free buttons", {"ffff00", "ebc015"}},
+    {"Gold", "Gold buttons", "Party leader and similar", {"fdff72", "ebb102"}},
+}
+local function drawButtons(x, y, w, h)
+    local values = state.values.buttons or {}
+    local lw = 210
+    rect(x, y, lw, h, C.panel, 2, 8)
+    text("BUTTONS", x + 12, y + 10, C.faint, 11, 5, true)
+    local names = {}
+    for _, b in ipairs(BTN_STYLES) do names[#names + 1] = b[2] end
+    local selected = state.btnStyle or BTN_STYLES[1][2]
+    local picked = sideList("btnStyles", x + 8, y + 30, lw - 22, h - 38, names, selected,
+        function(n) for _, b in ipairs(BTN_STYLES) do if b[2] == n then return values[b[1]] ~= nil end end end)
+    if picked then state.btnStyle, selected = picked, picked end
+    local style
+    for _, b in ipairs(BTN_STYLES) do if b[2] == selected then style = b end end
+    local key = style[1]
+
+    local raw = tostring(values[key] or ""):lower()
+    local c1, c2 = raw:match("^(%x%x%x%x%x%x)>(%x%x%x%x%x%x)$")
+    if not c1 and raw:match("^%x%x%x%x%x%x$") then c1 = raw end
+    local mode = raw == "sky" and "sky" or (raw == "rainbow" and "rainbow" or (c1 and "colour" or "game"))
+    local function save(a, b) setMapping("buttons", key, a and (b and (a .. ">" .. b) or a) or nil) end
+
+    local rx, rw = x + lw + 12, w - lw - 12
+    rect(rx, y, rw, h, C.panel, 2, 8)
+    text(selected, rx + 16, y + 14, C.text, 15, 5, true)
+    text(style[3] .. " - only you see it.", rx + 16, y + 36, C.dim, 12, 5)
+
+    -- Preview: a button in the chosen colours.
+    local px, py, pw, ph = rx + 16, y + 60, 180, 40
+    local SL = 24
+    for i = 1, SL do
+        local u = (i - 0.5) / SL
+        local col
+        if mode == "rainbow" then
+            col = Color3.fromHSV(u * 0.8, 0.85, 1)
+        else
+            local a, b = style[4][1], style[4][2]
+            if mode == "sky" then a, b = "c44cff", "668aff" elseif mode == "colour" then a, b = c1, c2 or c1 end
+            local ca, cb = hexColor(a), hexColor(b)
+            local k = u
+            col = Color3.new(ca.R + (cb.R - ca.R) * k, ca.G + (cb.G - ca.G) * k, ca.B + (cb.B - ca.B) * k)
+        end
+        rect(px + (i - 1) * pw / SL, py, math.ceil(pw / SL) + 1, ph, col, 4, (i == 1 or i == SL) and 8 or 0)
+    end
+    text("Play", px + pw / 2, py + 12, C.text, 15, 5, true, true)
+
+    local my = y + 112
+    local modes = {"Game's own", "Colour", "Sky", "Rainbow"}
+    local at = ({game = 1, colour = 2, sky = 3, rainbow = 4})[mode]
+    local pickMode = segmented(rx + 16, my, 360, 28, modes, at)
+    if pickMode and pickMode ~= at then
+        if pickMode == 1 then save(nil)
+        elseif pickMode == 2 then save(c1 or "ff4fd8")
+        elseif pickMode == 3 then setMapping("buttons", key, "sky")
+        else setMapping("buttons", key, "rainbow") end
+    end
+
+    local function swatches(label, sy, now, onPick, withNone)
+        text(label, rx + 16, sy + 6, C.dim, 13, 5)
+        local sx, size = rx + 110, 24
+        local list = {}
+        if withNone then list[1] = {"None", nil} end
+        for _, c in ipairs(TRACER_COLORS) do list[#list + 1] = c end
+        for i, c in ipairs(list) do
+            local bx = sx + (i - 1) * (size + 6)
+            if bx + size > rx + rw - 10 then break end
+            if c[2] then rect(bx, sy, size, size, hexColor(c[2]), 4, 5)
+            else rect(bx, sy, size, size, C.card, 4, 5); text("-", bx + size / 2, sy + 4, C.dim, 13, 5, false, true) end
+            if now == c[2] then border(bx - 2, sy - 2, size + 4, size + 4, C.text, 5, 6) end
+            if clicked(bx, sy, size, size) then onPick(c[2]) end
+        end
+    end
+    if mode == "colour" then
+        swatches("Colour 1", my + 44, c1, function(v) save(v, c2) end)
+        swatches("Colour 2", my + 80, c2, function(v) save(c1, v) end, true)
+        local cy = y + h - 42
+        textbox("btnHex", rx + 12, cy, rw - 270, 30, "Any colour, like ff66cc")
+        for i, which in ipairs({"Colour 1", "Colour 2"}) do
+            if button(rx + rw - 252 + (i - 1) * 126, cy, 120, 30, which) then
+                local v = trim(state.inputs.btnHex or ""):gsub("^#", ""):lower()
+                if not v:match("^%x%x%x%x%x%x$") then state.status = "Colours are 6 hex digits, like ff66cc"
+                elseif i == 1 then save(v, c2) else save(c1, v) end
+            end
+        end
+    elseif mode == "sky" then
+        local sky = (state.values.skybox or {}).Preset
+        text(sky and ("Colours from your sky: " .. sky) or "Pick a sky preset in the Sky tab first.", rx + 16, my + 50, C.faint, 12, 5)
+    end
+end
+
 -- Misc: smaller features, each a tab of its own under this one.
 local function drawMisc(x, y, w, h)
     local at = state.miscTab or 1
-    local pick = segmented(x, y, 480, 30, {"Tracers", "Hands", "Spoof", "Health bar"}, at)
+    local pick = segmented(x, y, 580, 30, {"Tracers", "Hands", "Spoof", "Health bar", "Buttons"}, at)
     if pick and pick ~= at then state.miscTab, at, focus = pick, pick, nil end
     if at == 1 then drawTracers(x, y + 38, w, h - 38)
     elseif at == 2 then drawHands(x, y + 38, w, h - 38)
     elseif at == 3 then drawSpoof(x, y + 38, w, h - 38)
-    else drawHealthBar(x, y + 38, w, h - 38) end
+    elseif at == 4 then drawHealthBar(x, y + 38, w, h - 38)
+    else drawButtons(x, y + 38, w, h - 38) end
 end
 
 -- Support ID: a short number for this PC, made here from Matcha's hardware ID
