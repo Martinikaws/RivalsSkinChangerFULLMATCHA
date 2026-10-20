@@ -908,8 +908,8 @@ local function loadImage(path)
         local okRead, body = pcall(readfile, file)
         if okRead and type(body) == "string" and #body > 8 then return body end
     end
-    local ok, body = pcall(fetch, SITE .. path)
-    if not ok or body:sub(2, 4) ~= "PNG" then return nil end
+    local ok, body = pcall(fetch, path:find("^https?://") and path or (SITE .. path))
+    if not ok or type(body) ~= "string" or body:sub(2, 4) ~= "PNG" then return nil end
     pcall(writefile, file, body)
     return body
 end
@@ -1950,6 +1950,157 @@ local function drawSpoof(x, y, w, h)
     end
 end
 
+-- Profile card spoof: wins and win rate (no longer than the real text - the
+-- card can only reuse its own letters), and the picture: a preset person, a
+-- user id (their avatar) or a decal / image id. Presets: Roblox, the RIVALS
+-- developers, the YouTubers with a charm (accounts from the RIVALS wiki's
+-- charm list, checked with Roblox 2026-10-20) and the live Ranked top 20
+-- read from the lobby leaderboard.
+local CARD_FIELDS = {
+    {key = "Wins", label = "Casual wins", number = true},
+    {key = "WinRate", label = "Casual win rate %", hint = "e.g. 99.9"},
+    {key = "RankedWins", label = "Ranked wins", number = true},
+    {key = "RankedWinRate", label = "Ranked win rate %", hint = "e.g. 88.8"},
+    {key = "Avatar", label = "Picture: user id (their avatar)", number = true},
+    {key = "Picture", label = "Picture: decal or image id", number = true},
+}
+local AVATAR_PRESETS = {
+    {"Roblox", {{"Roblox", 1}, {"builderman", 156}}},
+    {"RIVALS devs", {{"Nosniy", 20349956}, {"SenseiWarrior", 15941965}, {"GreatGuyBoom", 8034104}, {"nekoanims", 780350915}}},
+    {"YouTubers", {
+        {"8sty", 172669397}, {"Applino", 1010680683}, {"atorix", 1212564846}, {"Bandites", 64516}, {"Blizmid", 266340204},
+        {"BobbVX", 301707243}, {"Brian1KB", 1730213868}, {"CarbonMeister", 487532097}, {"Chex", 2528007458}, {"Cruz", 42306452},
+        {"D_reamz", 42477697}, {"Darktru", 121130556}, {"DV", 964088769}, {"elixir", 147139016}, {"enriquebruv", 72777686},
+        {"Hoopie", 264355696}, {"hoppy819", 15315966}, {"Incublox", 4323727470}, {"KaiM", 527669241}, {"Karful", 103070346},
+        {"Kashy", 4378716640}, {"Kaye", 4891355965}, {"Khayri", 19737278}, {"Milo", 6114260623}, {"MiniBloxia", 52392831},
+        {"Mixedify", 152334685}, {"Mud", 324386852}, {"oPixel", 341006533}, {"philhood", 3410760577}, {"RODNY", 317520373},
+        {"ShadowTrojan", 13108868}, {"SharkTactics", 18394211}, {"SlingshotBwai", 719253194}, {"Stefan", 7474730049},
+        {"TanqR", 84743203}, {"viecti", 68729698}, {"WE1RD", 2466113945}}},
+    {"Ranked top 20", "live"},
+}
+-- The lobby's Ranked leaderboard, read at most every 30 s: {name, id}.
+local rankedCache, rankedAt = nil, -100
+local function liveRanked()
+    if rankedCache and tick() - rankedAt < 30 then return rankedCache end
+    rankedAt = tick()
+    local out = {}
+    pcall(function()
+        for _, g in ipairs(game:GetService("Players").LocalPlayer.PlayerGui:GetChildren()) do
+            if g.Name == "LeaderboardGui" then
+                local title
+                for _, d in ipairs(g:GetDescendants()) do if d.Name == "Title" then title = d break end end
+                local okT, t = pcall(function() return title.Text end)
+                if okT and type(t) == "string" and t:lower():find("ranked") then
+                    local rows = {}
+                    for _, d in ipairs(g:GetDescendants()) do
+                        if d.Name == "UserID" then
+                            local okI, id = pcall(function() return d.Text end)
+                            local okR, rank = pcall(function() return d.Parent:FindFirstChild("Rank").Text end)
+                            local okN, name = pcall(function() return d.Parent:FindFirstChild("DisplayName").Text end)
+                            id = okI and tonumber(tostring(id):match("(%d+)"))
+                            rank = okR and tonumber(tostring(rank):match("(%d+)"))
+                            if id and rank and rank <= 20 then rows[#rows + 1] = {rank, okN and name or tostring(id), id} end
+                        end
+                    end
+                    table.sort(rows, function(a, b) return a[1] < b[1] end)
+                    for _, r in ipairs(rows) do out[#out + 1] = {"#" .. r[1] .. " " .. r[2], r[3]} end
+                end
+            end
+        end
+    end)
+    rankedCache = out
+    return out
+end
+
+-- The picture the card will show, for the preview: a user's headshot (and
+-- name) or a decal / image thumbnail, looked up on Roblox in the background.
+local previews = {}
+local function cardPreview(kind, id)
+    local key = kind .. ":" .. id
+    local e = previews[key]
+    if e then return e end
+    e = {state = "loading"}
+    previews[key] = e
+    task.spawn(function()
+        local api = kind == "user"
+            and ("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=" .. id .. "&size=150x150&format=Png&isCircular=false")
+            or ("https://thumbnails.roblox.com/v1/assets?assetIds=" .. id .. "&returnPolicy=PlaceHolder&size=150x150&format=Png")
+        local ok, body = pcall(fetch, api)
+        e.url = ok and type(body) == "string" and body:match('"imageUrl"%s*:%s*"(.-)"') or nil
+        if kind == "user" then
+            local okU, u = pcall(fetch, "https://users.roblox.com/v1/users/" .. id)
+            local name = okU and type(u) == "string" and u:match('"name"%s*:%s*"(.-)"')
+            local display = okU and type(u) == "string" and u:match('"displayName"%s*:%s*"(.-)"')
+            e.name = name and ("@" .. name .. ((display and display ~= name) and (" (" .. display .. ")") or "")) or "no such user"
+        end
+        e.state = e.url and "ok" or "failed"
+    end)
+    return e
+end
+
+local function drawSpoofCard(x, y, w, h)
+    rect(x, y, w, h, C.panel, 2, 8)
+    local cx = x + 20
+    text("Profile card", cx, y + 14, C.text, 15, 5, true)
+    text("Only on your own profile card. Wins and win rate can't be longer than the real ones.", cx, y + 36, C.dim, 12, 5)
+    local cy = y + 60
+    local quarter = math.floor((w - 100) / 4)
+    for i = 1, 4 do spoofBox(CARD_FIELDS[i], cx + (i - 1) * (quarter + 20), cy, quarter) end
+    cy = cy + 62
+    local half = math.floor((w - 60) / 2)
+    spoofBox(CARD_FIELDS[5], cx, cy, half)
+    spoofBox(CARD_FIELDS[6], cx + half + 20, cy, half)
+    cy = cy + 62
+
+    -- Presets: a group, then a person; picking one sets Avatar.
+    local values = state.values.spoof or {}
+    local groups = {}
+    for i, g in ipairs(AVATAR_PRESETS) do groups[i] = g[1] end
+    local gi = state.presetGroup or 1
+    local gp = segmented(cx, cy, w - 40, 28, groups, gi)
+    if gp and gp ~= gi then state.presetGroup, gi = gp, gp; resetScroll("avatarPresets") end
+    cy = cy + 36
+    local list = AVATAR_PRESETS[gi][2]
+    if list == "live" then list = liveRanked() end
+    local names, byName = {}, {}
+    for _, p in ipairs(list) do names[#names + 1] = p[1]; byName[p[1]] = p[2] end
+    local now = tonumber(values.Avatar)
+    -- Preview, right of the list: the picture wins over the avatar, as on the card.
+    local pw = 170
+    local px = x + w - 20 - pw
+    rect(px, cy, pw, pw + 40, C.card, 3, 8)
+    local picId, kind = tonumber(values.Picture), "asset"
+    if not picId then picId, kind = now, "user" end
+    if picId then
+        local pv = cardPreview(kind, tostring(picId))
+        if pv.url and not picture(pv.url, px + 10, cy + 10, pw - 20, pw - 20, 4, "cardPreview") then
+            text("Loading...", px + pw / 2, cy + pw / 2 - 6, C.faint, 12, 5, false, true)
+        elseif not pv.url then
+            text(pv.state == "loading" and "Loading..." or "No picture", px + pw / 2, cy + pw / 2 - 6, C.faint, 12, 5, false, true)
+        end
+        text(fitText(kind == "user" and (pv.name or "...") or ("Decal / image " .. picId), pw - 12, 12), px + pw / 2, cy + pw - 2, C.text, 12, 5, false, true)
+    else
+        text("Your own picture", px + pw / 2, cy + pw / 2 - 6, C.faint, 12, 5, false, true)
+    end
+    local current
+    for _, p in ipairs(list) do if p[2] == now then current = p[1] end end
+    if #names == 0 then
+        text(AVATAR_PRESETS[gi][2] == "live" and "The Ranked leaderboard isn't loaded - stand near it in the lobby." or "Nothing here.", cx, cy + 8, C.faint, 12, 5)
+    else
+        local picked = sideList("avatarPresets", cx, cy, w - 60 - pw, h - (cy - y) - 52, names, current or "",
+            function(n) return byName[n] == now end)
+        if picked and byName[picked] then
+            setMapping("spoof", "Avatar", tostring(byName[picked]))
+            state.inputs["spoof_Avatar"] = tostring(byName[picked])
+        end
+    end
+    local by = y + h - 44
+    text("Shows the next time you open your profile.", cx, by + 8, C.faint, 12, 5)
+    if button(x + w - 200, by, 180, 30, "Clear card changes") then
+        for _, f in ipairs(CARD_FIELDS) do setMapping("spoof", f.key, nil); state.inputs["spoof_" .. f.key] = "" end
+    end
+end
+
 -- Health bar: your own bar in the bottom HUD, saved as the [HealthBar]
 -- section. Only you see it; the game draws it, so it doesn't lag.
 local HP_STYLES = {
@@ -2210,12 +2361,13 @@ end
 -- Misc: smaller features, each a tab of its own under this one.
 local function drawMisc(x, y, w, h)
     local at = state.miscTab or 1
-    local pick = segmented(x, y, 580, 30, {"Tracers", "Hands", "Spoof", "Health bar", "Buttons"}, at)
+    local pick = segmented(x, y, 700, 30, {"Tracers", "Hands", "Spoof", "Profile card", "Health bar", "Buttons"}, at)
     if pick and pick ~= at then state.miscTab, at, focus = pick, pick, nil end
     if at == 1 then drawTracers(x, y + 38, w, h - 38)
     elseif at == 2 then drawHands(x, y + 38, w, h - 38)
     elseif at == 3 then drawSpoof(x, y + 38, w, h - 38)
-    elseif at == 4 then drawHealthBar(x, y + 38, w, h - 38)
+    elseif at == 4 then drawSpoofCard(x, y + 38, w, h - 38)
+    elseif at == 5 then drawHealthBar(x, y + 38, w, h - 38)
     else drawButtons(x, y + 38, w, h - 38) end
 end
 
