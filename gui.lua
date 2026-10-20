@@ -2549,9 +2549,14 @@ end
 pcall(loadConfig)
 pcall(loadSettings)
 -- Started by autoexec, the window stays hidden until its key is pressed
--- (Settings > Window on autoexec).
+-- (Settings > Window on autoexec). Most autoexec folders hold just the
+-- loadstring line, not autoexec.lua, so the flag is often missing. Matcha
+-- clears _G on every join and teleport (and scripts can't see its autoexec
+-- folder), so the GUI's first start since joining counts as autoexec too.
 local startedHidden = false
-if _G.__RivalsGuiFromAutoexec then
+local firstSinceJoin = not _G.__RivalsGuiStarted
+_G.__RivalsGuiStarted = true
+if _G.__RivalsGuiFromAutoexec or firstSinceJoin then
     _G.__RivalsGuiFromAutoexec = nil
     if not state.showOnAutoexec then state.open, startedHidden = false, true end
 end
