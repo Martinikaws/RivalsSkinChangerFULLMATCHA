@@ -452,6 +452,25 @@ end
 -- item libraries. nil when it can't be read; the lists then show everything.
 local inventory = nil
 local readInventory
+-- Where a ModuleScript keeps its thread and registry slot: the changer's
+-- shared layout, else the known pair whose pointer leads to a thread
+-- (+0x150/+0x170 on build 9ac8595, +0x170/+0x178 before).
+local function modFields(ms)
+    local L = _G.__RSC_LAYOUT
+    if L and L.thread and L.slot then return L.thread, L.slot end
+    for _, pair in ipairs({{0x150, 0x170}, {0x170, 0x178}}) do
+        local okP, p = pcall(memory_read, "uintptr_t", ms.Address + pair[1])
+        if okP and p and p > 0x10000 and p < 0x7fffffffffff then
+            for b = 0, 3 do
+                local okB, v = pcall(memory_read, "byte", p + b)
+                if okB and v == 10 then return pair[1], pair[2] end
+            end
+        end
+    end
+    return 0x150, 0x170
+end
+local function modThreadOff(ms) return (modFields(ms)) end
+local function modSlotOff(ms) local _, s = modFields(ms) return s end
 local detectLayout
 do
     local mrd = memory_read
@@ -462,15 +481,16 @@ do
     -- dynamically at runtime across Roblox updates, falling back to known builds.
     local TAG_TABLE, TAG_THREAD = 7, 10
     -- Known builds: 02c37bc (type byte +1) and cec3ad5 (type byte +0).
-    local KNOWN = {[1] = {tt = 1, globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18},
+    local KNOWN = {[2] = {tt = 2, globalState = 0x78, registry = 0x618, lsize = 6, sizearray = 8, array = 0x18, node = 0x20},
+        [1] = {tt = 1, globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18},
         [0] = {tt = 0, globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}}
     local L = KNOWN[1]
     local function isTable(t) return t and t > 0x10000 and rbyte(t + L.tt) == TAG_TABLE end
 
     detectLayout = function(ms)
         if _G.__RSC_LAYOUT and _G.__RSC_LAYOUT.array then return _G.__RSC_LAYOUT end
-        local thread = ms and ms.Address and rd(ms.Address + 0x170)
-        local slot = ms and ms.Address and rint(ms.Address + 0x178)
+        local thread = ms and ms.Address and rd(ms.Address + modThreadOff(ms))
+        local slot = ms and ms.Address and rint(ms.Address + modSlotOff(ms))
         if not thread or thread < 0x10000 or not slot or slot < 1 then return nil end
         local tt
         for b = 0, 3 do if rbyte(thread + b) == TAG_THREAD then tt = b break end end
@@ -564,7 +584,7 @@ do
     end
 
     local function moduleTable(ms)
-        local thread = ms and ms.Address and rd(ms.Address + 0x170)
+        local thread = ms and ms.Address and rd(ms.Address + modThreadOff(ms))
         if not thread or thread < 0x10000 then return nil end
         local shared = _G.__RSC_LAYOUT
         if shared and shared.array then
@@ -577,7 +597,7 @@ do
         local g = rd(thread + L.globalState)
         local reg = g and g > 0x10000 and rd(g + L.registry)
         if not isTable(reg) then return nil end
-        local slot, size, arr = rint(ms.Address + 0x178), rint(reg + L.sizearray), rd(reg + L.array)
+        local slot, size, arr = rint(ms.Address + modSlotOff(ms)), rint(reg + L.sizearray), rd(reg + L.array)
         if not slot or not size or not arr or slot < 1 or slot > size then return nil end
         local t = rd(arr + (slot - 1) * 16)
         return isTable(t) and t or nil
@@ -833,7 +853,7 @@ end
 local function equipSoundStrings()
     local modules = game:GetService("ReplicatedStorage"):FindFirstChild("Modules")
     local ms = modules and modules:FindFirstChild("SoundLibrary")
-    local thread = ms and rdq(ms.Address + 0x170)
+    local thread = ms and rdq(ms.Address + modThreadOff(ms))
     -- The layout the changer found; without it, one of the two known builds,
     local lay = _G.__RSC_LAYOUT
     if not lay or not lay.array then
@@ -841,12 +861,14 @@ local function equipSoundStrings()
     end
     if not lay or not lay.array then
         local okB, b0 = pcall(memory_read, "byte", thread or 0)
-        lay = (okB and b0 == 10) and {globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}
+        local okB2, b2 = pcall(memory_read, "byte", (thread or 0) + 2)
+        lay = (okB2 and b2 == 10) and {globalState = 0x78, registry = 0x618, lsize = 6, sizearray = 8, array = 0x18, node = 0x20}
+            or (okB and b0 == 10) and {globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}
             or {globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18}
     end
     local g = thread and rdq(thread + lay.globalState)
     local reg = g and rdq(g + lay.registry)
-    local slot, arr = ms and rdi(ms.Address + 0x178), reg and rdq(reg + lay.array)
+    local slot, arr = ms and rdi(ms.Address + modSlotOff(ms)), reg and rdq(reg + lay.array)
     local t = arr and slot and slot > 0 and rdq(arr + (slot - 1) * 16)
     if not t then return {} end
     local base = rdq(t + lay.node)
