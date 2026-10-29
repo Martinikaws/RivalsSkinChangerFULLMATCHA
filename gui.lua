@@ -591,7 +591,7 @@ local readInventory
 local function modFields(ms)
     local L = _G.__RSC_LAYOUT
     if L and L.thread and L.slot then return L.thread, L.slot end
-    for _, pair in ipairs({{0x150, 0x170}, {0x170, 0x178}}) do
+    for _, pair in ipairs({{0x168, 0x170}, {0x150, 0x170}, {0x170, 0x178}}) do
         local okP, p = pcall(memory_read, "uintptr_t", ms.Address + pair[1])
         if okP and p and p > 0x10000 and p < 0x7fffffffffff then
             for b = 0, 3 do
@@ -615,7 +615,7 @@ do
     local TAG_STRING, TAG_TABLE, TAG_THREAD = 6, 7, 10
     -- Known builds: 02c37bc (type byte +1) and cec3ad5 (type byte +0).
     local KNOWN = {[2] = {tt = 2, globalState = 0x78, registry = 0x618, lsize = 6, sizearray = 8, array = 0x18, node = 0x20},
-        [1] = {tt = 1, globalState = 0x68, registry = 0x620, lsize = 4, sizearray = 8, array = 0x20, node = 0x18},
+        [1] = {tt = 1, globalState = 0x38, registry = 0x618, lsize = 4, sizearray = 8, array = 0x28, node = 0x18}, -- build 5a21b87
         [0] = {tt = 0, globalState = 0x18, registry = 0x620, lsize = 5, sizearray = 8, array = 0x18, node = 0x10}}
     local L = KNOWN[1]
     local function isTable(t) return t and t > 0x10000 and rbyte(t + L.tt) == TAG_TABLE end
@@ -1507,6 +1507,7 @@ function prefs.load()
     end
 end
 function prefs.save()
+    prefs.version = (prefs.version or 0) + 1
     local out = {}
     for name in pairs(prefs.favs) do out[#out + 1] = "fav=" .. name end
     table.sort(out)
@@ -1519,8 +1520,30 @@ function prefs.used(name)
     prefs.recent[13] = nil
     prefs.save()
 end
--- The items as the grid shows them; "None" stays first.
+-- The items as the grid shows them; "None" stays first. Callers build their
+-- lists every frame, so the result is reused while the list (by its names),
+-- the sort, the filters and the favourites are the same.
+prefs.version = 0
 function prefs.arrange(items)
+    local n = #items
+    local key = n .. "|" .. prefs.sort .. "|" .. prefs.rarity .. "|" .. prefs.show .. "|" .. prefs.version .. "|"
+        .. tostring(inventory ~= nil) .. "|" .. (n > 0 and (items[1].name .. "|" .. items[n].name .. "|" .. items[math.ceil(n / 2)].name) or "")
+    local c = prefs.cache
+    if c and c.key == key then
+        -- Same names in the same places: hand back these items in the cached order.
+        local byName = {}
+        for _, it in ipairs(items) do byName[it.name] = it end
+        local out = {}
+        for i, name in ipairs(c.names) do out[i] = byName[name] end
+        if #out == #c.names then return out end
+    end
+    local result = prefs.arrangeNow(items)
+    local names = {}
+    for i, it in ipairs(result) do names[i] = it.name end
+    prefs.cache = {key = key, names = names}
+    return result
+end
+function prefs.arrangeNow(items)
     local want = prefs.RARITIES[prefs.rarity]
     local recentAt = {}
     for i, name in ipairs(prefs.recent) do recentAt[name] = i end
