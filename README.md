@@ -8,6 +8,9 @@ and charms the site doesn't list yet are read from the running game.
 
 Only you see the changes. Nothing is sent to the server.
 
+Need help or want updates? Join the Discord:
+**[Martini's All In One](https://discord.gg/NZSyZwAXgd)**
+
 ## Files
 
 | File | What it is |
