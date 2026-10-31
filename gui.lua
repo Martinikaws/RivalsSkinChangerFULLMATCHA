@@ -145,6 +145,7 @@ local RANKS = {"Archnemesis", "Nemesis", "Onyx 3", "Onyx 2", "Onyx 1", "Diamond 
 local RARITY_COLORS = {
     Common = Color3.fromRGB(123, 255, 0), Rare = Color3.fromRGB(0, 221, 255), Legendary = Color3.fromRGB(255, 60, 60),
     Mythical = Color3.fromRGB(129, 133, 242), Unique = Color3.fromRGB(255, 140, 0), Genuine = Color3.fromRGB(127, 163, 90),
+    Custom = Color3.fromRGB(255, 79, 216),
 }
 -- Loadout slot of each weapon; the site's list replaces this when it loads.
 local WEAPON_SLOTS = {}
@@ -1496,8 +1497,8 @@ end
 local prefs = {file = "rivals_gui_lists.txt", favs = {}, recent = {}, sort = 1, rarity = 0, show = 1,
     SHOWS = {"Everything", "Owned", "Favourites"},
     SORTS = {"Default", "A-Z", "Rarity", "Recent"},
-    RARITIES = {"Common", "Rare", "Legendary", "Mythical", "Unique", "Genuine"},
-    RANK = {Common = 1, Rare = 2, Legendary = 3, Mythical = 4, Unique = 5, Genuine = 6}}
+    RARITIES = {"Common", "Rare", "Legendary", "Mythical", "Unique", "Genuine", "Custom"},
+    RANK = {Common = 1, Rare = 2, Legendary = 3, Mythical = 4, Unique = 5, Genuine = 6, Custom = 7}}
 function prefs.load()
     local ok, body = pcall(readfile, prefs.file)
     if not ok or type(body) ~= "string" then return end
@@ -1971,6 +1972,21 @@ local function drawCosmetics(x, y, w, h)
     textbox(tsid, rx + 12, gy, rw - 24, 28, "Search looks like...")
     gy = gy + 38
     local items, tq = {{name = "None", none = true}}, query(tsid)
+    -- Custom wraps built on the Wraps tab, listed like any other wrap.
+    if kind.key == "wraps" then
+        for n = 1, 3 do
+            local cw = state.values["customwrap" .. n]
+            local built = cw and next(cw) ~= nil
+            if matches(tq, "custom wrap " .. n) then
+                local colors = {}
+                for k = 1, 3 do
+                    local ok, c = pcall(Color3.fromHex, "#" .. tostring(built and (cw["Color" .. k] or cw.Color1) or "2a2d38"))
+                    if ok then colors[#colors + 1] = c end
+                end
+                items[#items + 1] = {name = "Custom Wrap " .. n, rarity = "Custom", colors = colors, unbuilt = not built, slot = n}
+            end
+        end
+    end
     for _, item in ipairs(list) do
         if item.name ~= owned and matches(tq, item.name) then item.own = true; items[#items + 1] = item end
     end
@@ -1979,7 +1995,11 @@ local function drawCosmetics(x, y, w, h)
         return it.name == target or (season ~= nil and it.name == season)
     end)
     if hit then
-        if hit.none then
+        if hit.unbuilt then
+            -- Nothing to wear yet: straight to its builder.
+            state.tab, state.miscTab, state.cwSlot = "Misc", 8, hit.slot
+            state.status = "Build Custom Wrap " .. hit.slot .. " here, then pick it in Cosmetics."
+        elseif hit.none then
             setMapping(kind.section, owned, nil)
         elseif kind.key == "charms" and hit.name:match("^Season %d+$") then
             guarded(function() setMapping("charms", owned, hit.name .. " " .. (state.rank[owned] or RANKS[1])) end, hit.name)
@@ -2847,10 +2867,107 @@ function THEMES.draw(x, y, w, h)
         cx, y + h - 30, C.faint, 12, 5)
 end
 
+-- Custom wraps ([CustomWrap1..3]): up to 3 wraps of your own. Each replaces
+-- wraps you own and sets a material, colour and transparency for the 3 parts of
+-- a wrap, with one pattern borrowed from any wrap in the game.
+THEMES.CW = {MATS = {"Neon", "ForceField", "Glass", "Metal", "SmoothPlastic"}, TRANS = {0, 0.25, 0.5, 0.75},
+    PARTS = {"Main", "Second", "Accent"},
+    PRESETS = {{"Neon", {"Neon", 0}, nil}, {"Hologram", {"Neon", 0.6}, nil}, {"Mesh", {"ForceField", 0}, "Mesh"}}}
+function THEMES.drawWraps(x, y, w, h)
+    local CW = THEMES.CW
+    local slot = state.cwSlot or 1
+    local key = "customwrap" .. slot
+    local values = state.values[key] or {}
+    local lw = 230
+    rect(x, y, lw, h, C.panel, 2, 8)
+    local leftTab = state.cwLeft or 1
+    local lt = segmented(x + 8, y + 8, lw - 16, 26, {"Replaces", "Pattern"}, leftTab)
+    if lt and lt ~= leftTab then state.cwLeft, leftTab = lt, lt; resetScroll("cwList") end
+    local on, list = {}, {}
+    for name in tostring(values.Replace or ""):gmatch("[^,]+") do
+        name = trim(name)
+        if name ~= "" then on[name] = true; list[#list + 1] = name end
+    end
+    local names = {}
+    if leftTab == 2 then names[1] = "None" end
+    for _, item in ipairs(catalog.wraps or {}) do
+        if leftTab == 2 or on[item.name] or not ownedOnly() or owns(item.name) then names[#names + 1] = item.name end
+    end
+    local pattern = values.Pattern or "None"
+    local picked = sideList("cwList", x + 8, y + 42, lw - 22, h - 50, names, leftTab == 2 and pattern or "",
+        function(n) if leftTab == 2 then return n == pattern and n ~= "None" end return on[n] end)
+    if picked and leftTab == 2 then
+        setMapping(key, "Pattern", picked ~= "None" and picked or nil)
+    elseif picked then
+        if on[picked] then
+            for i = #list, 1, -1 do if list[i] == picked then table.remove(list, i) end end
+        else
+            list[#list + 1] = picked
+        end
+        setMapping(key, "Replace", #list > 0 and table.concat(list, ",") or nil)
+    end
+    local rx, rw = x + lw + 12, w - lw - 12
+    rect(rx, y, rw, h, C.panel, 2, 8)
+    local cx = rx + 16
+    local sl = segmented(cx, y + 10, 270, 28, {"Wrap 1", "Wrap 2", "Wrap 3"}, slot)
+    if sl then state.cwSlot = sl end
+    text("Listed in Cosmetics > Wraps as Custom Wrap " .. slot .. "  -  pattern: " .. pattern, cx + 284, y + 17, C.dim, 12, 5)
+    text("Presets", cx, y + 54, C.dim, 13, 5)
+    for i, p in ipairs(CW.PRESETS) do
+        if button(cx + 74 + (i - 1) * 104, y + 48, 96, 28, p[1]) then
+            local col = values.Color1 or "ff00e6"
+            for k = 1, 3 do
+                setMapping(key, "Material" .. k, p[2][1])
+                setMapping(key, "Transparency" .. k, tostring(p[2][2]))
+                setMapping(key, "Color" .. k, col)
+            end
+            setMapping(key, "Pattern", p[3])
+        end
+    end
+    local part = state.cwPart or 1
+    text("Part", cx, y + 96, C.dim, 13, 5)
+    local pp = segmented(cx + 74, y + 90, 300, 28, CW.PARTS, part)
+    if pp then state.cwPart, part = pp, pp end
+    text("Material", cx, y + 136, C.dim, 13, 5)
+    local mat = tostring(values["Material" .. part] or ""):lower()
+    local mi = 0
+    for i, m in ipairs(CW.MATS) do if m:lower() == mat then mi = i end end
+    local mp = segmented(cx + 74, y + 130, rw - 106, 28, {"Neon", "Force", "Glass", "Metal", "Plastic"}, mi)
+    if mp then setMapping(key, "Material" .. part, CW.MATS[mp]) end
+    text("See-through", cx, y + 176, C.dim, 13, 5)
+    local tr, ti = tonumber(values["Transparency" .. part]) or 0, 1
+    for i, t in ipairs(CW.TRANS) do if math.abs(t - tr) < 0.01 then ti = i end end
+    local tp = segmented(cx + 94, y + 170, 280, 28, {"0%", "25%", "50%", "75%"}, ti)
+    if tp then setMapping(key, "Transparency" .. part, tostring(CW.TRANS[tp])) end
+    local now = tostring(values["Color" .. part] or ""):gsub("^#", ""):lower()
+    text("Colour", cx, y + 216, C.dim, 13, 5)
+    local size = 24
+    for i, c in ipairs(TRACER_COLORS) do
+        local bx = cx + 74 + (i - 1) * (size + 6)
+        if bx + size > rx + rw - 10 then break end
+        rect(bx, y + 210, size, size, hexColor(c[2]), 4, 5)
+        if now == c[2] then border(bx - 2, y + 208, size + 4, size + 4, C.text, 5, 6) end
+        if clicked(bx, y + 210, size, size) then setMapping(key, "Color" .. part, c[2]) end
+    end
+    textbox("cwHex", rx + 12, y + 246, rw - 150, 30, "Any colour, like ff66cc")
+    if button(rx + rw - 130, y + 246, 118, 30, "Use colour") then
+        local v = trim(state.inputs.cwHex or ""):gsub("^#", ""):lower()
+        if v:match("^%x%x%x%x%x%x$") then setMapping(key, "Color" .. part, v) else state.status = "Colours are 6 hex digits, like ff66cc" end
+    end
+    text("Most guns are mainly the Main part. Neon hides patterns. Shows on your next match, or when you re-enter an area.",
+        cx, y + h - 66, C.faint, 12, 5)
+    text("A wrap here wins over its line in Cosmetics. Only you see it.", cx, y + h - 46, C.faint, 12, 5)
+    if button(rx + rw - 150, y + h - 38, 138, 28, "Clear this wrap") then
+        for _, k in ipairs({"Replace", "Pattern", "Color1", "Color2", "Color3", "Material1", "Material2", "Material3", "Transparency1", "Transparency2", "Transparency3"}) do
+            setMapping(key, k, nil)
+        end
+    end
+end
+
 -- Misc: smaller features, each a tab of its own under this one.
 local function drawMisc(x, y, w, h)
     local at = state.miscTab or 1
-    local pick = segmented(x, y, math.min(w, 800), 30, {"Tracers", "Hands", "Spoof", "Profile card", "Health bar", "Buttons", "Theme"}, at)
+    local pick = segmented(x, y, math.min(w, 800), 30, {"Tracers", "Hands", "Spoof", "Profile card", "Health bar", "Buttons", "Theme", "Wraps"}, at)
     if pick and pick ~= at then state.miscTab, at, focus = pick, pick, nil end
     if at == 1 then drawTracers(x, y + 38, w, h - 38)
     elseif at == 2 then drawHands(x, y + 38, w, h - 38)
@@ -2858,7 +2975,8 @@ local function drawMisc(x, y, w, h)
     elseif at == 4 then drawSpoofCard(x, y + 38, w, h - 38)
     elseif at == 5 then drawHealthBar(x, y + 38, w, h - 38)
     elseif at == 6 then drawButtons(x, y + 38, w, h - 38)
-    else THEMES.draw(x, y + 38, w, h - 38) end
+    elseif at == 7 then THEMES.draw(x, y + 38, w, h - 38)
+    else THEMES.drawWraps(x, y + 38, w, h - 38) end
 end
 
 -- Support ID: a short number for this PC, made here from Matcha's hardware ID
