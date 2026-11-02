@@ -533,6 +533,26 @@ local function autoexecLoadsGui()
     end
     return false
 end
+-- Crash trail: every step goes straight to a file, so when Matcha itself dies
+-- (nothing else records why) the last lines say what was running. It keeps
+-- the last 300 lines across joins and restarts. Nothing is sent anywhere.
+if type(_G.__RSC_CRUMB) ~= "function" then
+    _G.__RSC_CRUMB = function(step)
+        pcall(function()
+            local file = "rivals_crash_trail.txt"
+            local okR, body = pcall(readfile, file)
+            local lines = {}
+            if okR and type(body) == "string" then
+                for line in body:gmatch("[^\n]+") do lines[#lines + 1] = line end
+            end
+            local okT, stamp = pcall(os.date, "%m-%d %H:%M:%S")
+            lines[#lines + 1] = (okT and stamp or "?") .. "  " .. tostring(game.JobId):sub(1, 8) .. "  " .. tostring(step):sub(1, 150)
+            local from = math.max(1, #lines - 299)
+            writefile(file, table.concat(lines, "\n", from) .. "\n")
+        end)
+    end
+end
+_G.__RSC_CRUMB("drawn GUI: start")
 local function loadSettings()
     local okRead, body = pcall(readfile, SETTINGS)
     local auto
@@ -821,7 +841,9 @@ local function jsAssignment(source, name)
 end
 
 local function loadCatalog()
+    _G.__RSC_CRUMB("GUI: reading inventory")
     readInventory()
+    _G.__RSC_CRUMB("GUI: reading the lists")
     local out = {weapons = {}, wraps = {}, finishers = {}, charms = {}, skyFaces = {}, loaded = true}
     -- Weapons, their skins, pictures and rarities, as the site shows them.
     local okMap, map = pcall(function() return decode(fetch(SITE .. "skin_icon_map.json")) end)
@@ -852,7 +874,9 @@ local function loadCatalog()
     end)
     -- Items straight from the game: skins the site doesn't list yet are added
     -- with the game's own picture, and marked new.
+    _G.__RSC_CRUMB("GUI: reading the game's items")
     local okGame, gameItems = pcall(catalog.readGame)
+    _G.__RSC_CRUMB("GUI: game items read")
     gameItems = okGame and gameItems or {}
     local newCount = 0
     local function gamePic(item)
@@ -943,6 +967,7 @@ local function loadCatalog()
             out.skyFaces[sky.name:lower()] = tostring(sky.faces.ft)
         end
     end
+    _G.__RSC_CRUMB("GUI: lists done, " .. newCount .. " new")
     out.readGame, out.newCount = catalog.readGame, newCount
     catalog = out
     if not state.weapon and #catalog.weapons > 0 then state.weapon = catalog.weapons[1].name end
@@ -3180,6 +3205,14 @@ function SETTINGS_PAGES.support()
         "Settings: safe=" .. tostring(state.safeMode) .. " fps=" .. tostring(state.fpsMode)
             .. " autoapply=" .. tostring(state.autoApply), ""}
     for _, l in ipairs(type(_G.__RSC_LOG) == "table" and _G.__RSC_LOG or {}) do out[#out + 1] = l end
+    for _, name in ipairs({"rivals_crash_trail.txt", "rivals_alive.txt"}) do
+        local okR, body = pcall(readfile, name)
+        if okR and type(body) == "string" then
+            out[#out + 1] = ""
+            out[#out + 1] = "--- " .. name
+            out[#out + 1] = body:sub(-6000)
+        end
+    end
     return table.concat(out, "\n")
 end
 SETTINGS_PAGES[4] = function(x, y, w, cx, cy)
@@ -3390,6 +3423,14 @@ local ANIM = {open = 0.3, close = 0.22, slide = 48}
 local shown, lastFrame = 0, nil
 
 local function frame()
+    if tick() - (state.aliveAt or 0) >= 5 then
+        state.aliveAt = tick()
+        pcall(function()
+            local okT, stamp = pcall(os.date, "%m-%d %H:%M:%S")
+            writefile("rivals_alive.txt", (okT and stamp or "?") .. "  server " .. tostring(game.JobId):sub(1, 8)
+                .. "  open=" .. tostring(state.open) .. "  tab=" .. tostring(state.tab) .. "  busy=" .. tostring(_G.__RIVALS_SKIN_CHANGER_BUSY ~= nil) .. "\n")
+        end)
+    end
     readInput()
     if state.accent ~= appliedAccent then appliedAccent = state.accent; applyAccent(state.accent) end
     if state.binding then
@@ -3463,6 +3504,7 @@ local function autoApplyOnJoin()
                 _G.__RivalsGuiAutoApplied = key
                 if isfile(FILE) and readfile(FILE):find("%S") then
                     if #catalog.weapons == 0 then pcall(loadCatalog) end
+                    _G.__RSC_CRUMB("GUI: auto-apply")
                     job("Auto-applying...", apply)
                 end
             end
