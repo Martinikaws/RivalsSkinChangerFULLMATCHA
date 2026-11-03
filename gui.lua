@@ -561,6 +561,8 @@ local function loadSettings()
         local value = body:match("autoapply%s*=%s*(%w+)")
         if value then auto = (value == "1" or value == "true" or value == "on") end
         state.mouseOffset = tonumber(body:match("mouseoffset%s*=%s*(%-?%d+)")) or 0
+        state.winW = tonumber(body:match("winw%s*=%s*(%d+)"))
+        state.winH = tonumber(body:match("winh%s*=%s*(%d+)"))
         local key = tonumber(body:match("togglekey%s*=%s*(%d+)"))
         state.toggleKey = key and KEY_NAMES[key] and key or DEFAULT_TOGGLE
         state.accent = body:match("accent%s*=%s*(%x%x%x%x%x%x)") or DEFAULT_ACCENT
@@ -584,6 +586,7 @@ end
 local function saveSettings()
     pcall(writefile, SETTINGS, "autoapply=" .. (state.autoApply and "1" or "0") .. "\n"
         .. "mouseoffset=" .. tostring(state.mouseOffset) .. "\n"
+        .. (state.winW and ("winw=" .. state.winW .. "\nwinh=" .. state.winH .. "\n") or "")
         .. "togglekey=" .. tostring(state.toggleKey) .. "\n"
         .. "accent=" .. tostring(state.accent) .. "\n"
         .. "ownedonly=" .. (state.ownedOnly and "1" or "0") .. "\n"
@@ -1018,12 +1021,20 @@ local function apply(panic)
     _G.__RSC_NOTIFY_STYLE = ({"both", "matcha", "roblox"})[state.notifyStyle] or "both"
     _G.__RSC_PROGRESS = {0, "Starting"}
     _G.__RSC_CONFIG_OVERRIDE = panic and "-- panic" or nil
-    -- Quick apply when only non-skin sections changed since the last apply in
-    -- this server (and safe mode is the same).
     local applying = state.readable and configText() or nil
-    _G.__RSC_QUICK = (not panic and state.appliedKey == context.key and state.appliedSafe == state.safeMode
-        and history.quickable(state.appliedText, applying)) or nil
-    if _G.__RSC_QUICK then state.status = "Applying (quick: skins kept)..." end
+    -- Incremental apply (adapted from the WilliamO2025 fork): when the engine
+    -- already ran in this server, it applies only what changed since then.
+    local previous = _G.__RIVALS_SKIN_CHANGER_STATE
+    if previous and previous.wfAddr == context.wf and previous.jobId == game.JobId
+        and previous.deltaVersion == "4.1" and type(previous.applyChanges) == "function" then
+        _G.__RSC_CONFIG_OVERRIDE, _G.__RSC_QUICK = nil, nil
+        local ok, message = pcall(previous.applyChanges, panic and "-- panic" or applying)
+        assert(ok, message)
+        _G.__RSC_PROGRESS = {100, "Done"}
+        _G.__RivalsGuiAutoApplied = context.key
+        state.status = panic and "Game look restored. Save & Apply brings your changes back." or tostring(message or "Changes applied.")
+        return
+    end
     local source, from = changerSource()
     local fn, err = loadstring(source)
     assert(type(fn) == "function", err or "Could not compile the changer.")
@@ -1259,15 +1270,29 @@ local function textWidth(s, size, bold)
     widths[key], widthCount = w, widthCount + 1
     return w
 end
-local function fitText(s, room, size, bold)
-    s = tostring(s)
-    if textWidth(s, size, bold) <= room then return s end
-    local lo, hi = 0, #s
-    while lo < hi do
-        local mid = math.floor((lo + hi + 1) / 2)
-        if textWidth(s:sub(1, mid) .. "..", size, bold) <= room then lo = mid else hi = mid - 1 end
+-- Fitting a text measures it several times; the result is kept (2048 at
+-- most) since the same labels are drawn every frame.
+local fitText
+do
+    local cache, count = {}, 0
+    fitText = function(s, room, size, bold)
+        s = tostring(s)
+        local key = s .. "\1" .. tostring(room) .. "\1" .. tostring(size) .. (bold and "b" or "")
+        local hit = cache[key]
+        if hit then return hit end
+        local out = s
+        if textWidth(s, size, bold) > room then
+            local lo, hi = 0, #s
+            while lo < hi do
+                local mid = math.floor((lo + hi + 1) / 2)
+                if textWidth(s:sub(1, mid) .. "..", size, bold) <= room then lo = mid else hi = mid - 1 end
+            end
+            out = s:sub(1, math.max(1, lo)) .. ".."
+        end
+        if count >= 2048 then cache, count = {}, 0 end
+        cache[key], count = out, count + 1
+        return out
     end
-    return s:sub(1, math.max(1, lo)) .. ".."
 end
 local function text(s, x, y, color, size, z, bold, center)
     s = tostring(s)
@@ -1301,10 +1326,20 @@ local function picture(path, x, y, w, h, z, key, alpha)
     key = key or path
     local slot = imageObjects[key]
     if not slot or slot.path ~= path then
+        -- Decoding is native work inside Matcha: one picture every 0.08 s at
+        -- most, and none while the changer runs (a join with an apply and a
+        -- grid of pictures decoding at once is the likeliest Matcha crash).
+        if shared.busy or upstreamBusy() or tick() < (shared.decodeAt or 0) then return false end
+        shared.decodeAt = tick() + 0.08
         if slot then pcall(function() slot.obj:Remove() end) end
         local obj = Drawing.new("Image")
         obj.Visible = false
-        obj.Data = e.data
+        local okData = pcall(function() obj.Data = e.data end)
+        if not okData then
+            pcall(function() obj:Remove() end)
+            imageObjects[key], e.state = nil, "failed"
+            return false
+        end
         slot = {obj = obj, cache = {}, path = path}
         imageObjects[key] = slot
     end
@@ -1347,7 +1382,17 @@ end
 -- release, so pressing and dragging a list scrolls it instead.
 
 local mouse, mouseAt = nil, 0
-local M = {x = 0, y = 0, down = false, press = false, release = false, px = 0, py = 0, dragged = false, took = false}
+local M = {x = 0, y = 0, down = false, press = false, release = false, px = 0, py = 0, dragged = false, took = false, wheel = 0}
+pcall(function()
+    M.wheelConn = game:GetService("UserInputService").InputChanged:Connect(function(input)
+        pcall(function()
+            if state.open and tostring(input.UserInputType):match("MouseWheel$") then
+                local z = tonumber(input.Position.Z)
+                if z and z == z then M.wheel = math.max(-20, math.min(20, M.wheel + z)) end
+            end
+        end)
+    end)
+end)
 local keyState = {}
 local function keyHit(vk)
     local ok, down = pcall(iskeypressed, vk)
@@ -1445,6 +1490,10 @@ local function scroller(id, x, y, w, h, total, visible)
     local maxFirst = math.max(0, total - visible)
     local s = state.scroll[id] or {first = 0}
     state.scroll[id] = s
+    if M.wheel ~= 0 and not M.down and over(x, y, w + 16, h) then
+        s.first = math.floor(s.first - M.wheel * 3)
+        M.wheel = 0
+    end
     if over(x, y, w, h) then
         if keyHit(0x22) or keyHit(0x28) then s.first = s.first + (keyState[0x22] and visible or 1) end
         if keyHit(0x21) or keyHit(0x26) then s.first = s.first - (keyState[0x21] and visible or 1) end
@@ -3120,7 +3169,7 @@ end
 
 -- Config: what changed since the last save, copy / share / import, your
 -- inventory, and the history of earlier saves.
-SETTINGS_PAGES[3] = function(x, y, w, cx, cy)
+SETTINGS_PAGES[3] = function(x, y, w, cx, cy, h)
     local saved = state.baseline or ""
     local view = history.view(saved, state.readable and configText() or saved)
     local added, removed = view.added, view.removed
@@ -3181,7 +3230,7 @@ SETTINGS_PAGES[3] = function(x, y, w, cx, cy)
     local list = view.list
     if #list == 0 then text("Nothing yet - it fills as you save.", cx, cy + 6, C.faint, 12, 5) end
     for i, entry in ipairs(list) do
-        if cy + 30 > y + 470 then break end
+        if cy + 30 > y + (h or 524) - 54 then break end
         text(entry.stamp .. "   -   " .. (entry.changes or 0) .. " lines differ from now", cx, cy + 7, C.dim, 12, 5)
         if button(x + w - 200, cy, 180, 26, "Put this back") then
             job("Restoring...", function()
@@ -3215,7 +3264,7 @@ function SETTINGS_PAGES.support()
     end
     return table.concat(out, "\n")
 end
-SETTINGS_PAGES[4] = function(x, y, w, cx, cy)
+SETTINGS_PAGES[4] = function(x, y, w, cx, cy, h)
     local log = type(_G.__RSC_LOG) == "table" and _G.__RSC_LOG or {}
     text("Changer log", cx, cy + 6, C.text, 14, 5, true)
     text(#log == 0 and "Empty - it fills when the changer runs." or (#log .. " lines this session."), cx, cy + 26, C.faint, 12, 5)
@@ -3224,7 +3273,7 @@ SETTINGS_PAGES[4] = function(x, y, w, cx, cy)
         state.status = ok and "Copied - paste it to whoever is helping you." or "Copying isn't supported here."
     end
     if button(x + w - 190, cy, 170, 30, "Clear") then _G.__RSC_LOG = {} end
-    local top, bottom = cy + 50, y + 470
+    local top, bottom = cy + 50, y + (h or 524) - 54
     local rows = math.max(1, math.floor((bottom - top) / 16))
     local first = scroller("logView", cx, top, w - 52, bottom - top, #log, rows)
     for i = 1, rows do
@@ -3252,7 +3301,7 @@ local function drawSettings(x, y, w, h)
     rect(x, y, w, h, C.panel, 2, 8)
     local pg = segmented(x + 20, y + 14, 480, 28, SETTINGS_PAGES.names, state.settingsPage)
     if pg then state.settingsPage = pg end
-    SETTINGS_PAGES[state.settingsPage](x, y, w, x + 20, y + 58)
+    SETTINGS_PAGES[state.settingsPage](x, y, w, x + 20, y + 58, h)
 end
 
 -- The window
@@ -3329,12 +3378,25 @@ end
 
 local function drawWindow(slide)
     local vp = viewport()
-    win.w = math.min(840, math.max(560, vp.X - 20))
-    win.h = math.min(660, math.max(420, vp.Y - 40))
+    -- Size: dragged from the bottom-right corner (560 x 420 at least, the
+    -- screen at most) and remembered.
+    win.w = math.floor(math.max(560, math.min(state.winW or 840, vp.X - 20)))
+    win.h = math.floor(math.max(420, math.min(state.winH or 660, vp.Y - 40)))
     local x, y, w, h = win.x, win.y + math.floor(slide or 0), win.w, win.h
+    if M.press and not slide and over(x + w - 18, y + h - 18, 18, 18) then state.resizing = {M.x - w, M.y - h} end
+    if state.resizing then
+        if M.down then
+            state.winW = math.floor(math.max(560, math.min(vp.X - 20, M.x - state.resizing[1])))
+            state.winH = math.floor(math.max(420, math.min(vp.Y - 40, M.y - state.resizing[2])))
+            M.dragged = true
+        else
+            state.resizing = nil
+            saveSettings()
+        end
+    end
 
     -- Drag by the title bar.
-    if M.press and not slide and over(x, y, w - 60, 40) then grabbed = {M.x - x, M.y - y} end
+    if M.press and not slide and not state.resizing and over(x, y, w - 60, 40) then grabbed = {M.x - x, M.y - y} end
     if not M.down then grabbed = nil end
     if grabbed then
         win.x = math.floor(math.max(0, math.min(vp.X - 60, M.x - grabbed[1])))
@@ -3391,6 +3453,9 @@ local function drawWindow(slide)
     text(hint, x + w - 172 - 16 - textWidth(hint, 12), fy + 12, C.faint, 12, 5)
     if button(x + w - 172, fy + 5, 160, 28, "Save & Apply", true, busy) then job("Applying...", apply) end
 
+    -- The resize grip.
+    for i = 0, 2 do line(x + w - 4 - i * 5, y + h - 3, x + w - 3, y + h - 4 - i * 5, state.resizing and C.accent or C.faint, 6, 1) end
+
     -- Where the game says the mouse is, to check the offset against.
     circle(M.x, M.y, 2, C.accent, 9, true)
     return over(x, y, w, h)
@@ -3446,6 +3511,22 @@ local function frame()
     if state.open then shown = math.min(1, shown + dt / ANIM.open)
     else shown = math.max(0, shown - dt / ANIM.close) end
 
+    local keys = focus ~= nil or (state.binding ~= false and state.binding ~= nil)
+    if not keys then
+        for _, vk in ipairs({0x21, 0x22, 0x26, 0x28, 0x1B, 0x0D}) do
+            local okK, down = pcall(iskeypressed, vk)
+            if okK and down then keys = true break end
+        end
+    end
+    local changed = M.x ~= state.paintX or M.y ~= state.paintY or M.down or M.press or M.release or M.wheel ~= 0
+        or keys or (shown > 0 and shown < 1) or state.status ~= state.paintStatus or state.tab ~= state.paintTab
+    local idle = now - (state.paintAt or 0)
+    if not changed and ((shown == 0 and state.paintedHidden) or (shown > 0 and idle < 0.1)) then
+        return
+    end
+    state.paintX, state.paintY, state.paintStatus, state.paintTab, state.paintAt = M.x, M.y, state.status, state.tab, now
+    state.paintedHidden = shown == 0
+
     beginFrame()
     local overWindow = false
     if shown > 0 then
@@ -3460,6 +3541,7 @@ local function frame()
         Fade = 1
     end
     endFrame()
+    M.wheel = 0 -- a turn outside a list doesn't scroll the next page
     -- Keep clicks and typing on the window from reaching the game.
     local grab = state.open and (overWindow or focus ~= nil or state.binding ~= false and state.binding ~= nil)
     if grab ~= lastInputGrab and type(setrobloxinput) == "function" then
@@ -3470,6 +3552,7 @@ end
 
 local alive = true
 local function stop()
+    if M.wheelConn then pcall(function() M.wheelConn:Disconnect() end) end
     alive = false
     if _G.__RivalsGuiSession == guiToken then _G.__RivalsGuiSession = nil end
     pcall(wipe)
@@ -3497,8 +3580,11 @@ local function autoApplyOnJoin()
             if not state.settingsRead and okFile and hasFile then pcall(loadSettings) end
             local context = state.autoApply and currentContext()
             local key = context and context.key
+            if key ~= state.aaCandidate then state.aaCandidate, state.aaSince = key, tick() end
+            if key and tick() - (state.aaSince or tick()) < 2 then key = nil end
             local applied = _G.__RIVALS_SKIN_CHANGER_STATE
-            if key and _G.__RivalsGuiAutoApplied ~= key and applied and applied.wfAddr == context.wf then
+            if key and _G.__RivalsGuiAutoApplied ~= key and applied and applied.wfAddr == context.wf
+                and (not applied.jobId or applied.jobId == game.JobId) then
                 _G.__RivalsGuiAutoApplied = key
             elseif key and _G.__RivalsGuiAutoApplied ~= key and not shared.busy and not upstreamBusy() then
                 _G.__RivalsGuiAutoApplied = key
