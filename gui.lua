@@ -477,6 +477,20 @@ function history.quickable(old, new)
     end
     return old ~= nil and skinLines(old) == skinLines(new)
 end
+-- The crash trail's verdict on the last changer run: the step it was on when
+-- it never reached "done" (Matcha or Roblox closed mid-apply), else nil.
+function history.crashedStep()
+    local ok, body = pcall(readfile, "rivals_crash_trail.txt")
+    if not ok or type(body) ~= "string" then return nil end
+    local started, last
+    for line in body:gmatch("[^\r\n]+") do
+        local step = line:match("changer: (.*)$")
+        if step == "start" then started, last = true, nil
+        elseif step == "done" then started = false
+        elseif step and started then last = step end
+    end
+    return started and (last or "starting") or nil
+end
 function history.code(text)
     local lines = {}
     for line in ((text or ""):gsub("\r", "") .. "\n"):gmatch("(.-)\n") do
@@ -1015,7 +1029,8 @@ local function apply(panic)
     assert(not upstreamBusy(), "The changer is already running.")
     if not panic then saveConfig() end
     state.status = panic and "Putting the game's look back..." or "Applying..."
-    _G.__RSC_SAFE = state.safeMode or nil
+    _G.__RSC_SAFE = (state.safeMode or state.safeOnce) or nil
+    state.safeOnce = nil
     _G.__RSC_FPS = state.fpsMode or nil
     _G.__RSC_NOTIFY = ({"all", "errors", "off"})[state.notify] or "all"
     _G.__RSC_NOTIFY_STYLE = ({"both", "matcha", "roblox"})[state.notifyStyle] or "both"
@@ -3590,6 +3605,15 @@ local function autoApplyOnJoin()
                 _G.__RivalsGuiAutoApplied = key
                 if isfile(FILE) and readfile(FILE):find("%S") then
                     if #catalog.weapons == 0 then pcall(loadCatalog) end
+                    -- The last run never finished: this one is skins only.
+                    local crashed = history.crashedStep()
+                    if crashed and not state.safeMode then
+                        state.safeOnce = true
+                        local msg = "The last apply stopped at \"" .. crashed:sub(1, 60) .. "\" - this one is skins only. Save & Apply brings the rest back."
+                        print("[Rivals GUI] " .. msg)
+                        if type(notify) == "function" then pcall(notify, msg, "Rivals Skin Changer", 10) end
+                        _G.__RSC_CRUMB("GUI: auto-apply in safe mode after an unfinished run")
+                    end
                     _G.__RSC_CRUMB("GUI: auto-apply")
                     job("Auto-applying...", apply)
                 end
