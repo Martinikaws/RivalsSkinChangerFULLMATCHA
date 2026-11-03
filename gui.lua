@@ -491,6 +491,32 @@ function history.crashedStep()
     end
     return started and (last or "starting") or nil
 end
+-- Loadouts: 5 named slots, each a whole config in rivals_loadout_N.lua, its
+-- name on the first line ("-- loadout: name").
+history.LOADOUTS = 5
+function history.loadout(n)
+    local ok, body = pcall(readfile, "rivals_loadout_" .. n .. ".lua")
+    if not ok or type(body) ~= "string" or body == "" then return nil end
+    local name = body:match("^%-%- loadout: ([^\r\n]*)")
+    return {name = name ~= "" and name or ("Loadout " .. n), text = body:gsub("^%-%- loadout: [^\n]*\n", "")}
+end
+function history.saveLoadout(n, name, text)
+    name = tostring(name or ""):gsub("[\r\n]", ""):sub(1, 24)
+    if name == "" then name = "Loadout " .. n end
+    writefile("rivals_loadout_" .. n .. ".lua", "-- loadout: " .. name .. "\n" .. text)
+    assert(history.loadout(n), "Could not save the loadout.")
+    history.loadoutCache = nil
+    return name
+end
+-- The slots, read at most once a second (the page draws every frame).
+function history.loadouts()
+    local c = history.loadoutCache
+    if c and tick() - c.at < 1 then return c.list end
+    local list = {}
+    for n = 1, history.LOADOUTS do list[n] = history.loadout(n) or false end
+    history.loadoutCache = {at = tick(), list = list}
+    return list
+end
 function history.code(text)
     local lines = {}
     for line in ((text or ""):gsub("\r", "") .. "\n"):gmatch("(.-)\n") do
@@ -3184,6 +3210,18 @@ end
 
 -- Config: what changed since the last save, copy / share / import, your
 -- inventory, and the history of earlier saves.
+-- Switches to loadout n: the current saved config goes to the history, the
+-- loadout becomes the config, and it is applied (only what differs).
+-- Also reachable as _G.RivalsGuiState.useLoadout(n).
+shared.useLoadout = function(n)
+    local slot = history.loadout(n)
+    assert(slot, "Loadout " .. tostring(n) .. " is empty.")
+    history.push(state.baseline or "")
+    writefile(FILE, slot.text)
+    loadConfig()
+    apply()
+    state.status = "Switched to " .. slot.name .. ". " .. tostring(state.status or "")
+end
 SETTINGS_PAGES[3] = function(x, y, w, cx, cy, h)
     local saved = state.baseline or ""
     local view = history.view(saved, state.readable and configText() or saved)
@@ -3239,6 +3277,30 @@ SETTINGS_PAGES[3] = function(x, y, w, cx, cy, h)
         end)
     end
     cy = cy + 46
+    -- Loadouts: save the current config in a slot, or put one back and apply
+    -- it (only what differs is applied). The config it replaces goes to the
+    -- history first.
+    text("Loadouts", cx, cy + 6, C.text, 14, 5, true)
+    textbox("loadoutName", cx + 90, cy, 220, 28, "Name for Save")
+    text("Save keeps your saved config in a slot; Use switches to it.", cx + 324, cy + 7, C.faint, 12, 5)
+    cy = cy + 36
+    local slots = history.loadouts()
+    local sw = math.floor((w - 40 - (history.LOADOUTS - 1) * 8) / history.LOADOUTS)
+    for n = 1, history.LOADOUTS do
+        local sx, slot = cx + (n - 1) * (sw + 8), slots[n]
+        rect(sx, cy, sw, 58, C.card, 3, 6)
+        text(fitText(slot and slot.name or ("Empty " .. n), sw - 12, 12), sx + 6, cy + 6, slot and C.text or C.faint, 12, 5, slot ~= false)
+        local hw = math.floor((sw - 18) / 2)
+        if button(sx + 6, cy + 26, hw, 26, "Save") then
+            local name = trim(state.inputs.loadoutName or "")
+            local okS, err = pcall(history.saveLoadout, n, name ~= "" and name or (slot and slot.name), saved)
+            state.status = okS and ("Saved your config as \"" .. tostring(err) .. "\".") or tostring(err)
+        end
+        if slot and button(sx + 12 + hw, cy + 26, hw, 26, "Use", true, shared.busy or upstreamBusy()) then
+            job("Switching to " .. slot.name .. "...", function() shared.useLoadout(n) end)
+        end
+    end
+    cy = cy + 70
     text("History", cx, cy + 6, C.text, 14, 5, true)
     text("Each save keeps the config before it (last " .. history.max .. ").", cx, cy + 26, C.faint, 12, 5)
     cy = cy + 50
@@ -3268,6 +3330,12 @@ function SETTINGS_PAGES.support()
         "Roblox: " .. (okV and tostring(rbx) or "unknown"),
         "Settings: safe=" .. tostring(state.safeMode) .. " fps=" .. tostring(state.fpsMode)
             .. " autoapply=" .. tostring(state.autoApply), ""}
+    local okD, diag = pcall(SETTINGS_PAGES.diagnose)
+    if okD then
+        out[#out + 1] = "--- checks"
+        for _, d in ipairs(diag) do out[#out + 1] = "[" .. d[1] .. "] " .. d[2] .. (d[3] and (" - " .. d[3]) or "") end
+        out[#out + 1] = ""
+    end
     for _, l in ipairs(type(_G.__RSC_LOG) == "table" and _G.__RSC_LOG or {}) do out[#out + 1] = l end
     for _, name in ipairs({"rivals_crash_trail.txt", "rivals_alive.txt"}) do
         local okR, body = pcall(readfile, name)
@@ -3279,16 +3347,199 @@ function SETTINGS_PAGES.support()
     end
     return table.concat(out, "\n")
 end
+-- One-click checks: each common problem as a line with a verdict (ok, warn,
+-- fail) and what to do about it, in plain words.
+function SETTINGS_PAGES.diagnose()
+    local out = {}
+    local function add(level, what, tip) out[#out + 1] = {level, what, tip} end
+    local context = currentContext()
+    add(context and "ok" or "fail", context and "In RIVALS, weapons loaded" or "Not in RIVALS, or its weapons haven't loaded",
+        not context and "Join a match or the shooting range and wait a few seconds." or nil)
+    local off = _G.__RSC_OFFSETS
+    local okV, rbx = pcall(getrbxversion)
+    if type(off) ~= "table" then
+        add("warn", "The changer hasn't run in this server yet", "Press Save & Apply, then run the checks again.")
+    elseif off.fits == false or (okV and off.version and tostring(rbx):find(tostring(off.version), 1, true) == nil and off.fits ~= true) then
+        add("fail", "The offsets don't match this Roblox build (" .. tostring(okV and rbx or "?") .. ")",
+            "Roblox updated: wait for the offsets and the script to update, then rejoin.")
+    else
+        add("ok", "Offsets fit this Roblox build (" .. tostring(off.from or "?") .. ")")
+    end
+    local trace = _G.__RSC_ROUTE_TRACE
+    if type(off) == "table" then
+        local slow = false
+        for _, l in ipairs(type(_G.__RSC_LOG) == "table" and _G.__RSC_LOG or {}) do
+            -- Only the latest run counts.
+            if l:find("^%-%-%-%- run at") then slow = false end
+            if l:find("slow memory scan", 1, true) then slow = true end
+        end
+        if _G.__RSC_LAYOUT and not slow then
+            add("ok", "Memory layout found the fast way")
+        else
+            add("warn", "Memory layout: used the slow scan" .. (trace and trace.stop and (" (" .. tostring(trace.stop) .. ")") or ""),
+                "Usually the game was still loading: Save & Apply again. If it repeats, copy the output for support.")
+        end
+    end
+    local crashed = history.crashedStep()
+    add(crashed and "warn" or "ok", crashed and ("The last run never finished (stopped at \"" .. crashed:sub(1, 50) .. "\")") or "The last run finished",
+        crashed and "Matcha or Roblox closed mid-apply. If it happens again, copy the output for support." or nil)
+    local probs = type(_G.__RSC_PROBLEMS) == "table" and _G.__RSC_PROBLEMS or {}
+    if #probs == 0 then
+        add("ok", "No problems reported by the last run")
+    else
+        for i = 1, math.min(3, #probs) do add("warn", tostring(probs[i]):sub(1, 110)) end
+    end
+    local offCount = 0
+    for _, l in ipairs(type(_G.__RSC_LOG) == "table" and _G.__RSC_LOG or {}) do
+        if l:find("turned off for this server", 1, true) then
+            offCount = offCount + 1
+            add("warn", l:sub(1, 110), "That feature stops until you rejoin; its setting may not suit this Roblox build.")
+        end
+    end
+    if offCount == 0 then add("ok", "All live features running") end
+    if not state.readable then
+        add("fail", "Your config couldn't be read", "Settings > General > Reload > Config.")
+    else
+        local clash = configClashes()
+        if #clash > 0 then add("warn", "Two lines use the same item: " .. table.concat(clash, ", "):sub(1, 90), "The changer skips those; change one of them.") end
+        local unknown = {}
+        for weapon, skin in pairs(state.values.skins or {}) do
+            local wpn = weaponEntry(weapon)
+            if catalog.loaded and (not wpn or not (wpn.info or {})[skin]) and skin:lower() ~= "default" then unknown[#unknown + 1] = weapon .. "=" .. skin end
+        end
+        local wrapNames = {}
+        for _, it in ipairs(catalog.wraps or {}) do wrapNames[it.name] = true end
+        for owned, target in pairs(state.values.wraps or {}) do
+            if catalog.loaded and not target:match("^[Cc]ustom [Ww]rap %d$") and not wrapNames[target] then unknown[#unknown + 1] = owned .. "=" .. target end
+        end
+        if #unknown > 0 then
+            table.sort(unknown)
+            add("warn", "Names not in the lists: " .. table.concat(unknown, ", "):sub(1, 90), "Check the spelling, or Reload > Lists if the game just added them.")
+        elseif #clash == 0 then
+            add("ok", "Config readable, no clashes or unknown names")
+        end
+    end
+    add(catalog.loaded and #catalog.weapons > 0 and "ok" or "warn", catalog.loaded and #catalog.weapons > 0 and "Site lists loaded" or "The site's lists didn't load",
+        not (catalog.loaded and #catalog.weapons > 0) and "Check your connection, then Reload > Lists." or nil)
+    for _, f in ipairs(SCRIPT_FILES) do
+        local okF, has = pcall(isfile, f)
+        if okF and has then add("warn", "A local copy of the changer (" .. f .. ") is used instead of the published one",
+            "Delete it from Matcha's workspace unless you're testing.") break end
+    end
+    state.diag, state.diagAt = out, tick()
+    return out
+end
+-- Also reachable from the console (_G.RivalsGuiState.diagnose()), for support.
+shared.diagnose = SETTINGS_PAGES.diagnose
+
+-- Setup check: is Matcha set up the way the changer needs? Same lines as the
+-- checks, and a line that can be put right safely carries a Fix (d[4]).
+function SETTINGS_PAGES.setupCheck()
+    local out = {}
+    local function add(level, what, tip, fix) out[#out + 1] = {level, what, tip, fix} end
+    local missing, optional = {}, {}
+    local NEED = {Drawing = Drawing, memory_read = memory_read, memory_write = memory_write,
+        readfile = readfile, writefile = writefile, isfile = isfile, listfiles = listfiles}
+    for name, f in pairs(NEED) do if f == nil then missing[#missing + 1] = name end end
+    for name, f in pairs({setclipboard = setclipboard, getrbxversion = getrbxversion, delfile = delfile}) do
+        if f == nil then optional[#optional + 1] = name end
+    end
+    table.sort(optional)
+    table.sort(missing)
+    add(#missing == 0 and "ok" or "fail", #missing == 0 and "Matcha has everything the changer needs"
+        or ("Matcha is missing: " .. table.concat(missing, ", ")), #missing > 0 and "Update Matcha, then restart it." or nil)
+    if #optional > 0 then add("warn", "Not available (only extras use them): " .. table.concat(optional, ", ")) end
+    local okA, onJoin = pcall(autoexecLoadsGui)
+    if okA and onJoin then
+        add("ok", "Starts by itself when you join (found in autoexec)")
+    else
+        -- Matcha usually won't let a script read its autoexec folder, so not
+        -- finding it there proves nothing: a note, not a warning.
+        add("info", "Can't look inside Matcha's autoexec folder from here",
+            "To start it on every join, put the loadstring in a file in that folder.")
+    end
+    local menu = _G.__MatchaBuiltInGui
+    if type(menu) == "table" then
+        add("warn", "The menu-tab GUI is running too", "Both work, but use one: two can apply at the same time.",
+            function() pcall(menu.stop); state.status = "Stopped the menu-tab GUI." end)
+    else
+        add("ok", "Only this GUI is running")
+    end
+    local okS, hasS = pcall(isfile, SETTINGS)
+    add((okS and hasS and state.settingsRead) and "ok" or "warn",
+        (okS and hasS and state.settingsRead) and "Settings saved" or "Settings not saved yet",
+        not (okS and hasS) and "Fix saves them now." or nil,
+        not (okS and hasS) and function() saveSettings(); state.settingsRead = true end or nil)
+    local okC, hasC = pcall(isfile, FILE)
+    if not (okC and hasC) then
+        add("warn", "No config yet (" .. FILE .. ")", "Pick a skin on the Skins page and press Save & Apply.")
+    else
+        add(state.readable and "ok" or "fail", state.readable and "Config file found and readable" or "Config file can't be read",
+            not state.readable and "Settings > Config > History puts back an earlier one." or nil)
+    end
+    -- Memory layouts saved for older Roblox builds are never used again.
+    local okV, rbx = pcall(getrbxversion)
+    local current = "rivals_layout_" .. ((okV and type(rbx) == "string" and rbx:match("[%w%-]+")) or "unknown") .. ".json"
+    local old = {}
+    for _, dir in ipairs({"", "."}) do
+        local okL, files = pcall(listfiles, dir)
+        if okL and type(files) == "table" and #files > 0 then
+            for _, path in ipairs(files) do
+                local name = tostring(path):match("([^/\\]+)$") or ""
+                if name:match("^rivals_layout_.+%.json$") and name ~= current then old[#old + 1] = name end
+            end
+            break
+        end
+    end
+    if #old > 0 then
+        local del = delfile
+        add("warn", #old .. " saved layout(s) from older Roblox builds", "Unused - safe to delete.",
+            type(del) == "function" and function()
+                local n = 0
+                for _, name in ipairs(old) do if pcall(del, name) then n = n + 1 end end
+                state.status = "Deleted " .. n .. " old layout file(s)."
+            end or nil)
+    end
+    for _, f in ipairs(SCRIPT_FILES) do
+        local okF, has = pcall(isfile, f)
+        if okF and has then add("warn", "A local copy of the changer (" .. f .. ") is used instead of the published one",
+            "Delete it from Matcha's workspace unless you're testing.") break end
+    end
+    state.diag, state.diagAt = out, tick()
+    return out
+end
+shared.setupCheck = SETTINGS_PAGES.setupCheck
+
 SETTINGS_PAGES[4] = function(x, y, w, cx, cy, h)
     local log = type(_G.__RSC_LOG) == "table" and _G.__RSC_LOG or {}
     text("Changer log", cx, cy + 6, C.text, 14, 5, true)
     text(#log == 0 and "Empty - it fills when the changer runs." or (#log .. " lines this session."), cx, cy + 26, C.faint, 12, 5)
+    if button(x + w - 720, cy, 150, 30, "Setup check") then pcall(SETTINGS_PAGES.setupCheck) end
+    if button(x + w - 560, cy, 150, 30, "Run checks", true) then pcall(SETTINGS_PAGES.diagnose) end
     if button(x + w - 400, cy, 200, 30, "Copy output for support") then
         local ok = pcall(setclipboard, SETTINGS_PAGES.support())
         state.status = ok and "Copied - paste it to whoever is helping you." or "Copying isn't supported here."
     end
-    if button(x + w - 190, cy, 170, 30, "Clear") then _G.__RSC_LOG = {} end
+    if button(x + w - 190, cy, 170, 30, "Clear") then _G.__RSC_LOG = {}; state.diag = nil end
     local top, bottom = cy + 50, y + (h or 524) - 54
+    -- The checks' results, above the log.
+    if state.diag then
+        local LEVEL = {ok = {"OK", C.good}, info = {"i", C.dim}, warn = {"!", C.accent}, fail = {"X", C.bad}}
+        for _, d in ipairs(state.diag) do
+            if top + 16 > bottom - 40 then break end
+            local lv = LEVEL[d[1]] or LEVEL.warn
+            text(lv[1], cx, top, lv[2], 12, 5, true)
+            text(fitText(d[2] .. (d[3] and ("  -  " .. d[3]) or ""), w - (d[4] and 160 or 90), 12), cx + 30, top, (d[1] == "ok" or d[1] == "info") and C.dim or C.text, 12, 5)
+            if d[4] and button(x + w - 90, top - 3, 60, 20, "Fix") then
+                pcall(d[4])
+                pcall(SETTINGS_PAGES.setupCheck)
+                break
+            end
+            top = top + (d[4] and 22 or 18)
+        end
+        line(cx, top + 2, x + w - 20, top + 2, C.line, 3, 1)
+        top = top + 10
+    end
     local rows = math.max(1, math.floor((bottom - top) / 16))
     local first = scroller("logView", cx, top, w - 52, bottom - top, #log, rows)
     for i = 1, rows do
