@@ -660,7 +660,7 @@ local function modFields(ms)
         if okP and p and p > 0x10000 and p < 0x7fffffffffff then
             for b = 0, 3 do
                 local okB, v = pcall(memory_read, "byte", p + b)
-                if okB and v == 10 then return pair[1], pair[2] end
+                if okB and (v == 10 or v == 9) then return pair[1], pair[2] end
             end
         end
     end
@@ -677,6 +677,11 @@ do
     -- Finds tt, globalState, registry, lsizenode, array and node pointers
     -- dynamically at runtime across Roblox updates, falling back to known builds.
     local TAG_STRING, TAG_TABLE, TAG_THREAD = 6, 7, 10
+    -- Roblox build 4ea8e85 (Nov 2026) numbers Luau's types one lower
+    -- (thread 9, table 6, string 5): set from the thread tag in use.
+    local function useTags(threadTag)
+        if threadTag then TAG_THREAD, TAG_TABLE, TAG_STRING = threadTag, threadTag - 3, threadTag - 4 end
+    end
     -- Known builds: 02c37bc (type byte +1) and cec3ad5 (type byte +0).
     local KNOWN = {[2] = {tt = 2, globalState = 0x78, registry = 0x618, lsize = 6, sizearray = 8, array = 0x18, node = 0x20},
         [1] = {tt = 1, globalState = 0x38, registry = 0x618, lsize = 4, sizearray = 8, array = 0x28, node = 0x18}, -- build 5a21b87
@@ -690,7 +695,9 @@ do
         local slot = ms and ms.Address and rint(ms.Address + modSlotOff(ms))
         if not thread or thread < 0x10000 or not slot or slot < 1 then return nil end
         local tt
-        for b = 0, 3 do if rbyte(thread + b) == TAG_THREAD then tt = b break end end
+        for _, tag in ipairs({10, 9}) do
+            for b = 0, 3 do if not tt and rbyte(thread + b) == tag then tt = b; useTags(tag) end end
+        end
         if not tt then return nil end
 
         local function arrayOf(reg)
@@ -732,7 +739,7 @@ do
                             for i = 0, count - 1 do
                                 local n = base + i * 32
                                 local kp = rd(n + 16)
-                                if (rint(n + 28) or 0) % 16 == 6 and kp and kp > 0x10000 then
+                                if (rint(n + 28) or 0) % 16 == TAG_STRING and kp and kp > 0x10000 then
                                     local ok, k = pcall(mrd, "string", kp + 24)
                                     if ok and type(k) == "string" and #k > 0 and #k < 64 then keys = keys + 1 end
                                 end
@@ -786,6 +793,7 @@ do
         local shared = _G.__RSC_LAYOUT
         if shared and shared.array then
             L = shared
+            useTags(shared.tagThread)
         else
             local detected = detectLayout(ms)
             if detected then L = detected end
@@ -1034,8 +1042,10 @@ local function currentContext()
     return ok and result or nil
 end
 local function upstreamBusy()
-    local stamp = _G.__RIVALS_SKIN_CHANGER_BUSY
-    return type(stamp) == "number" and tick() - stamp < 180
+    -- Only a run in this server counts: Matcha keeps _G across teleports, and
+    -- a run cut off by one never clears its stamp.
+    local stamp, job = _G.__RIVALS_SKIN_CHANGER_BUSY, _G.__RIVALS_SKIN_CHANGER_BUSY_JOB
+    return type(stamp) == "number" and tick() - stamp < 180 and (job == nil or job == game.JobId)
 end
 local function changerSource()
     for _, p in ipairs(SCRIPT_FILES) do
@@ -2131,11 +2141,13 @@ end
 -- couldn't scroll a dropdown): the game's skies first, then the uploaded ones.
 local function drawVisuals(x, y, w, h)
     if state.lightView then return SKY_GROUPS.drawLighting(x, y, w, h) end
+    if state.skyAdvanced then return SKY_GROUPS.drawAdvanced(x, y, w, h) end
     local skyNow = ((state.values.skybox or {}).Preset or ""):lower()
     local rx, rw = x, w
     rect(rx, y, rw, h, C.panel, 2, 8)
     text("Skybox", rx + 16, y + 14, C.text, 15, 5, true)
-    text(skyNow ~= "" and ("Now: " .. skyNow .. " (next map load)") or "Now: the game's own sky",
+    local own = (state.values.skybox or {}).All or (state.values.skybox or {}).FT or (state.values.skybox or {}).BK
+    text(skyNow ~= "" and ("Now: " .. skyNow .. " (next map load)") or (own and "Now: your own sky (Advanced)") or "Now: the game's own sky",
         rx + 16, y + 36, C.dim, 12, 5)
     local lightNow = ((state.values.lighting or {}).Preset or ""):lower()
     local li = lightNow == "dark" and 2 or (lightNow == "match" and 3 or 1)
@@ -2143,6 +2155,7 @@ local function drawVisuals(x, y, w, h)
     local l = segmented(rx + rw - 232, y + 14, 220, 30, {"Normal", "Dark", "Match sky"}, li)
     if l then setMapping("lighting", "Preset", ({false, "dark", "match"})[l] or nil) end
     if button(rx + rw - 400, y + 15, 100, 28, "Fine-tune") then state.lightView = true end
+    if button(rx + rw - 510, y + 15, 100, 28, "Advanced") then SKY_GROUPS.openAdvanced() end
 
     textbox("skySearch", rx + 12, y + 56, rw - 24, 28, "Search skies...")
     local q = query("skySearch")
@@ -2164,7 +2177,7 @@ local function drawVisuals(x, y, w, h)
     end)
     if hit then
         -- Per-face ids from the site would win over the preset; drop them.
-        for _, key in ipairs({"All", "BK", "DN", "FT", "LF", "RT", "UP"}) do setMapping("skybox", key, nil) end
+        for _, key in ipairs({"All", "BK", "DN", "FT", "LF", "RT", "UP", "Force"}) do setMapping("skybox", key, nil) end
         setMapping("skybox", "Preset", (not hit.none) and hit.name or nil)
     end
 end
@@ -2178,6 +2191,70 @@ local TRACER_COLORS = {
 }
 local function hexColor(hex)
     return RGB(tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16))
+end
+
+-- Advanced sky: your own Roblox image ids, one for all six faces or one per
+-- face, saved as [Skybox] All= or FT/BK/LF/RT/UP/DN=. The changer only writes
+-- images from its own skies unless Force=yes: an image the game can't load
+-- (a private or new upload) crashes Roblox on the next map load.
+SKY_GROUPS.FACES = {{"FT", "Front"}, {"BK", "Back"}, {"LF", "Left"}, {"RT", "Right"}, {"UP", "Up"}, {"DN", "Down"}}
+SKY_GROUPS.openAdvanced = function()
+    local v = state.values.skybox or {}
+    local function get(k) for key, val in pairs(v) do if key:upper() == k then return val end end end
+    state.inputs.skyAll = get("ALL") or ""
+    for _, f in ipairs(SKY_GROUPS.FACES) do state.inputs["sky" .. f[1]] = get(f[1]) or "" end
+    local force = tostring(get("FORCE") or ""):lower()
+    state.skyForce = force == "yes" or force == "true" or force == "on"
+    state.skyAdvanced, focus = true, nil
+end
+SKY_GROUPS.drawAdvanced = function(x, y, w, h)
+    rect(x, y, w, h, C.panel, 2, 8)
+    local cx = x + 20
+    text("Your own sky", cx, y + 14, C.text, 15, 5, true)
+    text("Roblox image ids (the number in the image's link). One for all six faces, or one per face.", cx, y + 36, C.dim, 12, 5)
+    if button(x + w - 120, y + 12, 100, 28, "< Sky") then state.skyAdvanced, focus = false, nil end
+    text("All faces", cx, y + 76, C.text, 13, 5)
+    textbox("skyAll", cx + 110, y + 68, 260, 30, "e.g. 10196550367")
+    local fw = math.floor((w - 40 - 2 * 16) / 3)
+    for i, f in ipairs(SKY_GROUPS.FACES) do
+        local col, row = (i - 1) % 3, math.floor((i - 1) / 3)
+        local fx, fy = cx + col * (fw + 16), y + 116 + row * 56
+        text(f[2], fx, fy, C.dim, 12, 5)
+        textbox("sky" .. f[1], fx, fy + 18, fw, 30, "Image id")
+    end
+    local fy = y + 236
+    text("Safety check", cx, fy + 8, C.text, 13, 5)
+    local fp = segmented(cx + 110, fy, 300, 30, {"Changer's skies only", "Force"}, state.skyForce and 2 or 1)
+    if fp then state.skyForce = fp == 2 end
+    text(state.skyForce and "Force: the ids are written as they are. An image the game can't load (a private or new upload)"
+        or "Ids that aren't from the changer's own skies are turned down, so a bad image can't crash the game.", cx, fy + 40, state.skyForce and C.accent or C.faint, 12, 5)
+    if state.skyForce then text("crashes Roblox on the next map load - use public images only.", cx, fy + 58, C.accent, 12, 5) end
+    local function id(k) return (trim(state.inputs[k] or "")):match("^(%d+)$") end
+    if button(cx, y + h - 50, 160, 32, "Use these", true) then
+        local all, faces, bad = id("skyAll"), {}, false
+        for _, f in ipairs(SKY_GROUPS.FACES) do
+            local raw = trim(state.inputs["sky" .. f[1]] or "")
+            faces[f[1]] = id("sky" .. f[1])
+            if raw ~= "" and not faces[f[1]] then bad = true end
+        end
+        if (trim(state.inputs.skyAll or "") ~= "" and not all) or bad then
+            state.status = "Use only the image's number, like 10196550367."
+        elseif not all and not next(faces) then
+            state.status = "Type an image id first."
+        else
+            for _, key in ipairs({"Preset", "All", "BK", "DN", "FT", "LF", "RT", "UP", "Force"}) do setMapping("skybox", key, nil) end
+            if all then setMapping("skybox", "All", all) end
+            for _, f in ipairs(SKY_GROUPS.FACES) do if faces[f[1]] then setMapping("skybox", f[1], faces[f[1]]) end end
+            if state.skyForce then setMapping("skybox", "Force", "yes") end
+            state.status = "Sky set - Save & Apply, then it shows on the next map load."
+        end
+    end
+    if button(cx + 172, y + h - 50, 120, 32, "Clear") then
+        for _, key in ipairs({"All", "BK", "DN", "FT", "LF", "RT", "UP", "Force"}) do setMapping("skybox", key, nil) end
+        state.inputs.skyAll = ""
+        for _, f in ipairs(SKY_GROUPS.FACES) do state.inputs["sky" .. f[1]] = "" end
+        state.skyForce = false
+    end
 end
 
 -- Lighting fine-tuning ([Lighting] Brightness, Exposure, Ambient, Outdoor),
@@ -3079,10 +3156,25 @@ function THEMES.drawWraps(x, y, w, h)
     end
 end
 
+-- Scope shading, saved as [Scope] Clear=on: the dark vignette and black ring
+-- around the Sniper's and Crossbow's scope are hidden, the reticle stays.
+THEMES.drawScope = function(x, y, w, h)
+    local on = tostring((state.values.scope or {}).Clear or ""):lower()
+    on = on == "on" or on == "true" or on == "yes" or on == "1"
+    rect(x, y, w, h, C.panel, 2, 8)
+    text("Scope shading", x + 16, y + 14, C.text, 15, 5, true)
+    text("Now: " .. (on and "removed - only the reticle and red dot show" or "the game's own dark scope"), x + 16, y + 36, C.dim, 12, 5)
+    local p = segmented(x + 16, y + 64, 300, 32, {"Game's scope", "No shading"}, on and 2 or 1)
+    if p and (p == 2) ~= on then setMapping("scope", "Clear", p == 2 and "on" or nil) end
+    text("Removes the dark vignette and the black ring around the view when you scope in", x + 16, y + 112, C.dim, 12, 5)
+    text("with the Sniper, the Crossbow and their skins. Only you see it.", x + 16, y + 132, C.dim, 12, 5)
+    text("Shows from the next Save & Apply, on your next scope-in.", x + 16, y + h - 26, C.faint, 12, 5)
+end
+
 -- Misc: smaller features, each a tab of its own under this one.
 local function drawMisc(x, y, w, h)
     local at = state.miscTab or 1
-    local pick = segmented(x, y, math.min(w, 800), 30, {"Tracers", "Hands", "Spoof", "Profile card", "Health bar", "Buttons", "Theme", "Wraps"}, at)
+    local pick = segmented(x, y, math.min(w, 860), 30, {"Tracers", "Hands", "Spoof", "Profile card", "Health bar", "Buttons", "Theme", "Wraps", "Scope"}, at)
     if pick and pick ~= at then state.miscTab, at, focus = pick, pick, nil end
     if at == 1 then drawTracers(x, y + 38, w, h - 38)
     elseif at == 2 then drawHands(x, y + 38, w, h - 38)
@@ -3091,7 +3183,8 @@ local function drawMisc(x, y, w, h)
     elseif at == 5 then drawHealthBar(x, y + 38, w, h - 38)
     elseif at == 6 then drawButtons(x, y + 38, w, h - 38)
     elseif at == 7 then THEMES.draw(x, y + 38, w, h - 38)
-    else THEMES.drawWraps(x, y + 38, w, h - 38) end
+    elseif at == 8 then THEMES.drawWraps(x, y + 38, w, h - 38)
+    else THEMES.drawScope(x, y + 38, w, h - 38) end
 end
 
 -- Support ID: a short number for this PC, made here from Matcha's hardware ID
