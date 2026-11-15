@@ -2334,8 +2334,14 @@ local function drawTracers(x, y, w, h)
     if q == "" then names[1] = "All guns" end
     for _, wpn in ipairs(catalog.weapons) do if matches(q, wpn.name) then names[#names + 1] = wpn.name end end
     local picked = sideList("tracerGuns", x + 8, y + 64, lw - 22, h - 72, names, state.tracerGun or "All guns",
-        function(n) return values[n == "All guns" and "Color" or n] ~= nil end)
-    if picked then state.tracerGun = picked; resetScroll("tracerGrid") end
+        function(n)
+            if n == "All guns" then return values.Color ~= nil end
+            return values[n] ~= nil or values[n .. " Speed"] ~= nil
+        end)
+    if picked then
+        if picked ~= state.tracerGun then state.tracerDrag, state.tracerSpeed = nil, nil end
+        state.tracerGun = picked; resetScroll("tracerGrid")
+    end
 
     local gun = state.tracerGun or "All guns"
     local key = gun == "All guns" and "Color" or gun
@@ -2351,11 +2357,19 @@ local function drawTracers(x, y, w, h)
         {name = "Match wrap", value = "wrap", colors = {RGB(255, 160, 44), RGB(230, 230, 230), RGB(40, 40, 40)}}}
     for _, c in ipairs(TRACER_COLORS) do items[#items + 1] = {name = c[1], value = c[2], colors = {hexColor(c[2])}} end
     local gy = y + 62
-    local hit = tileGrid("tracerGrid", rx + 12, gy, rw - 30, h - (gy - y) - 132, items, function(it)
+    local hit = tileGrid("tracerGrid", rx + 12, gy, rw - 30, h - (gy - y) - 168, items, function(it)
         if it.none then return current == nil end
         return it.value == current
     end)
     if hit then setMapping("tracers", key, hit.value) end
+
+    -- Automatically adds a wrap-matched tracer when Keyper is equipped.
+    local ky = y + h - 158
+    local ktOn = tostring(values.KeyperTracer or ""):lower() == "true"
+    text("Keyper tracer", rx + 16, ky, C.dim, 13, 5)
+    text("Instantly adds a wrap-matched tracer when Keyper is equipped", rx + 16, ky + 16, C.faint, 11, 5)
+    local kt = segmented(rx + rw - 152, ky, 140, 28, {"Off", "On"}, ktOn and 2 or 1)
+    if kt then setMapping("tracers", "KeyperTracer", kt == 2 and "true" or nil) end
 
     -- The game draws no tracers for the Energy Pistols; this turns them on.
     local ey = y + h - 122
@@ -2365,12 +2379,17 @@ local function drawTracers(x, y, w, h)
     local ep = segmented(rx + rw - 152, ey, 140, 28, {"Off", "On"}, epOn and 2 or 1)
     if ep then setMapping("tracers", "EnergyPistolsTracers", ep == 2 and "true" or nil) end
 
-    -- Speed, for every gun: 100% is the game's own, low is slow like the
-    -- Keyper. Saved when you let go, so dragging doesn't re-apply every frame.
+    -- Speed: 100% is the game's own, low is slow like the Keyper. The All guns
+    -- page sets the default; a gun's page sets that gun's own (a stored 100
+    -- there means the game's own, not "same as All guns"). Saved when you let
+    -- go, so dragging doesn't re-apply every frame.
     local sy = y + h - 84
-    local sp = state.tracerSpeed or tonumber(values.Speed) or 100
+    local isAll = gun == "All guns"
+    local speedKey = isAll and "Speed" or (gun .. " Speed")
+    local own = tonumber(values[speedKey])
+    local sp = state.tracerSpeed or own or tonumber(values.Speed) or 100
     text("Speed", rx + 16, sy + 6, C.dim, 13, 5)
-    local bx, bw = rx + 72, rw - 250
+    local bx, bw = rx + 72, rw - 330
     local t = (sp - 5) / 195
     rect(bx, sy + 12, bw, 4, C.card, 3, 2)
     rect(bx, sy + 12, math.max(1, bw * t), 4, C.accent, 4, 2)
@@ -2383,11 +2402,25 @@ local function drawTracers(x, y, w, h)
             M.dragged = true
         else
             state.tracerDrag, state.tracerSpeed = nil, nil
-            setMapping("tracers", "Speed", sp ~= 100 and tostring(sp) or nil)
+            if isAll then
+                setMapping("tracers", speedKey, sp ~= 100 and tostring(sp) or nil)
+            else
+                setMapping("tracers", speedKey, tostring(sp))
+            end
         end
     end
-    text(sp .. "%" .. (sp <= 25 and "  - slow, like the Keyper" or (sp == 100 and "  - the game's own" or "")),
-        bx + bw + 16, sy + 6, C.text, 13, 5)
+    local note
+    if isAll then
+        note = "  - default for every gun" .. (sp <= 25 and ", slow like the Keyper" or (sp == 100 and ", the game's own" or ""))
+    elseif own == nil and state.tracerSpeed == nil then
+        note = "  - same as All guns"
+    else
+        note = sp <= 25 and "  - slow, like the Keyper" or (sp == 100 and "  - the game's own" or "")
+    end
+    text(sp .. "%" .. note, bx + bw + 16, sy + 6, C.text, 13, 5)
+    if not isAll and own ~= nil and not state.tracerDrag then
+        if button(rx + rw - 82, sy, 70, 28, "Reset") then setMapping("tracers", speedKey, nil) end
+    end
 
     local cy = y + h - 42
     textbox("tracerHex", rx + 12, cy, rw - 140, 30, "Any colour, like ff66cc")
